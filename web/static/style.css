@@ -126,7 +126,24 @@ button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
   font-size: 0.9rem;
 }
 
-/* ── Status ─────────────────────────────────────────────── */
+/* ── Embedding progress bar ──────────────────────────────── */
+#embed-progress {
+  margin-bottom: 1.5rem;
+}
+.progress-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 0.875rem; color: var(--muted); margin-bottom: 0.5rem;
+}
+#progress-pct { font-weight: 600; color: var(--accent-hi); }
+.progress-track {
+  height: 8px; background: var(--border); border-radius: 999px; overflow: hidden;
+}
+.progress-bar {
+  height: 100%; background: var(--accent);
+  border-radius: 999px;
+  transition: width 1s ease;
+  width: 0%;
+}
 #status-panel {
   margin-top: 3rem;
   border-top: 1px solid var(--border);

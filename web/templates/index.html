@@ -75,6 +75,13 @@
       <div class="stat-card" id="stat-pending"><span class="stat-label">Pending</span><span class="stat-value">—</span></div>
       <div class="stat-card" id="stat-sync"><span class="stat-label">Last sync</span><span class="stat-value">—</span></div>
     </div>
+    <div id="embed-progress" hidden>
+      <div class="progress-header">
+        <span id="progress-label">Embedding in progress…</span>
+        <span id="progress-pct"></span>
+      </div>
+      <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
     <div id="breakdown-table"></div>
   </section>
 </main>
@@ -87,6 +94,21 @@ async function loadStatus() {
     document.querySelector('#stat-embedded .stat-value').textContent = data.embedded.toLocaleString();
     document.querySelector('#stat-pending .stat-value').textContent = data.pending_embedding.toLocaleString();
     document.querySelector('#stat-sync .stat-value').textContent = data.last_sync ? data.last_sync.split('T')[0] : 'never';
+
+    // Progress bar
+    const progressEl = document.getElementById('embed-progress');
+    if (data.pending_embedding > 0 && data.total > 0) {
+      const pct = Math.round((data.embedded / data.total) * 100);
+      document.getElementById('progress-bar').style.width = pct + '%';
+      document.getElementById('progress-pct').textContent = pct + '%';
+      document.getElementById('progress-label').textContent =
+        `Embedding in progress — ${data.embedded.toLocaleString()} / ${data.total.toLocaleString()}`;
+      progressEl.hidden = false;
+      // Keep polling while embedding is active
+      setTimeout(loadStatus, 5000);
+    } else {
+      progressEl.hidden = true;
+    }
 
     if (data.breakdown.length > 0) {
       const rows = data.breakdown.map(b =>
