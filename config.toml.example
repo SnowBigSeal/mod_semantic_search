@@ -1,0 +1,19 @@
+[inference]
+# OpenAI-compatible API bases (no trailing slash)
+chat_url      = "http://cuda.lan:8080"   # general chat / completions (64k ctx)
+autocomplete_url = "http://cuda.lan:8081" # Qwen 2.5 Coder micro (FIM autocomplete)
+embedding_url = "http://cuda.lan:8082"   # Qwen3-Embedding-8B
+reranker_url  = "http://cuda.lan:8083"   # Qwen3-Reranker-4B
+
+[modrinth]
+# Identifies your app to Modrinth — update with your info
+user_agent = "steve/mod-search/1.0.0 (contact@example.com)"
+
+[search]
+# Number of candidates to fetch before reranking
+candidate_pool = 50
+# Final number of results to display
+top_k = 10
+
+[storage]
+mods_db = "F:/mod-search/mods.db"

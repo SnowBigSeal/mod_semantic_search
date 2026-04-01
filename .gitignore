@@ -1,0 +1,6 @@
+# DB lives on F: drive per config.toml, but ignore if ever local
+mods.db
+mods.db-wal
+mods.db-shm
+__pycache__/
+*.pyc
