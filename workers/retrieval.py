@@ -15,7 +15,7 @@ import httpx
 
 import config
 import db
-from workers.ratelimit import RateLimiter
+from workers.ratelimit import RateLimiter, checked_get, APIDeprecatedError
 
 MODRINTH_BASE = "https://api.modrinth.com/v2"
 PAGE_SIZE = 100
@@ -48,19 +48,22 @@ def _search_all(loader: str, version: str, user_agent: str, since: Optional[str]
     limiter = RateLimiter()
 
     with httpx.Client(timeout=30) as client:
-        while True:
-            resp = client.get(f"{MODRINTH_BASE}/search", params=params, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            hits = data["hits"]
-            all_hits.extend(hits)
-            print(f"  fetched {len(all_hits)} / {data['total_hits']}", end="\r")
-            if len(all_hits) >= data["total_hits"]:
-                break
-            if max_results and len(all_hits) >= max_results:
-                break
-            params["offset"] += PAGE_SIZE
-            limiter.wait(resp)
+        try:
+            while True:
+                resp = checked_get(client, f"{MODRINTH_BASE}/search", params=params, headers=headers)
+                data = resp.json()
+                hits = data["hits"]
+                all_hits.extend(hits)
+                print(f"  fetched {len(all_hits)} / {data['total_hits']}", end="\r")
+                if len(all_hits) >= data["total_hits"]:
+                    break
+                if max_results and len(all_hits) >= max_results:
+                    break
+                params["offset"] += PAGE_SIZE
+                limiter.wait(resp)
+        except APIDeprecatedError as e:
+            print(f"\n[error] {e}")
+            raise
 
     print()
     return all_hits[:max_results] if max_results else all_hits
@@ -73,19 +76,23 @@ def _fetch_bodies(project_ids: list[str], user_agent: str) -> dict[str, str]:
     limiter = RateLimiter()
 
     with httpx.Client(timeout=30) as client:
-        for i in range(0, len(project_ids), BATCH_SIZE):
-            batch = project_ids[i : i + BATCH_SIZE]
-            resp = client.get(
-                f"{MODRINTH_BASE}/projects",
-                params={"ids": json.dumps(batch)},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            for proj in resp.json():
-                bodies[proj["id"]] = proj.get("body", "")
-            print(f"  fetched bodies {min(i + BATCH_SIZE, len(project_ids))} / {len(project_ids)}", end="\r")
-            if i + BATCH_SIZE < len(project_ids):
-                limiter.wait(resp)
+        try:
+            for i in range(0, len(project_ids), BATCH_SIZE):
+                batch = project_ids[i : i + BATCH_SIZE]
+                resp = checked_get(
+                    client,
+                    f"{MODRINTH_BASE}/projects",
+                    params={"ids": json.dumps(batch)},
+                    headers=headers,
+                )
+                for proj in resp.json():
+                    bodies[proj["id"]] = proj.get("body", "")
+                print(f"  fetched bodies {min(i + BATCH_SIZE, len(project_ids))} / {len(project_ids)}", end="\r")
+                if i + BATCH_SIZE < len(project_ids):
+                    limiter.wait(resp)
+        except APIDeprecatedError as e:
+            print(f"\n[error] {e}")
+            raise
 
     print()
     return bodies
