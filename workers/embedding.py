@@ -7,11 +7,16 @@ Usage:
 """
 
 import argparse
+import re
 import struct
+import time
 from datetime import datetime, timezone
+from typing import List
 
 import httpx
 import numpy as np
+from bs4 import BeautifulSoup
+from markdown import markdown
 
 import config
 import db
@@ -19,13 +24,18 @@ import db
 EMBED_ENDPOINT = "/v1/embeddings"
 
 
-def _embed_batch(texts: list[str], base_url: str, client: httpx.Client) -> list[list[float]]:
+def _embed_batch(texts: List[str], base_url: str, client: httpx.Client) -> List[List[float]]:
     resp = client.post(
         f"{base_url}{EMBED_ENDPOINT}",
         json={"input": texts},
         timeout=120,
     )
-    resp.raise_for_status()
+    if not resp.is_success:
+        raise httpx.HTTPStatusError(
+            f"HTTP {resp.status_code}: {resp.text[:200]}",
+            request=resp.request,
+            response=resp,
+        )
     data = resp.json()
     return [item["embedding"] for item in sorted(data["data"], key=lambda x: x["index"])]
 
@@ -39,12 +49,37 @@ def _unpack_vector(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float32)
 
 
-def _build_text(row) -> str:
-    parts = [row["title"] or "", row["description"] or "", row["body"] or ""]
-    return " ".join(p.strip() for p in parts if p.strip())
+# Server context window and chars-per-token estimate
+# Total token budget is shared across all texts in a batch.
+# 2048 ctx / batch_size texts * ~4 chars/token = per-text char limit.
+# Using 0.85 safety margin to account for tokenization overhead.
+SERVER_CTX_TOKENS = 2048
+CHARS_PER_TOKEN = 4
+CTX_SAFETY = 0.85
+
+def _clean_body(body: str) -> str:
+    """Convert markdown/HTML body to plain text, stripping formatting noise."""
+    if not body:
+        return ""
+    # Render markdown → HTML, then strip tags
+    html = markdown(body, extensions=["extra"])
+    text = BeautifulSoup(html, "html.parser").get_text(separator=" ")
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def _max_chars_per_text(batch_size: int) -> int:
+    return int((SERVER_CTX_TOKENS / batch_size) * CHARS_PER_TOKEN * CTX_SAFETY)
+
+def _build_text(row, max_chars: int) -> str:
+    title = (row["title"] or "").strip()
+    desc  = (row["description"] or "").strip()
+    body  = _clean_body(row["body"] or "")
+    text  = " ".join(p for p in [title, desc, body] if p)
+    return text[:max_chars]
 
 
-def run(batch_size: int = 16) -> None:
+def run(batch_size: int = 4) -> None:
     cfg = config.load()
     base_url = cfg["inference"]["embedding_url"].rstrip("/")
 
@@ -73,13 +108,20 @@ def run(batch_size: int = 16) -> None:
                 break
 
             ids = [r["id"] for r in rows]
-            texts = [_build_text(r) for r in rows]
+            texts = [_build_text(r, _max_chars_per_text(batch_size)) for r in rows]
 
             try:
                 vectors = _embed_batch(texts, base_url, client)
-            except httpx.HTTPError as e:
-                print(f"[error] embedding request failed: {e}")
-                break
+            except (httpx.HTTPError, httpx.TimeoutException) as e:
+                print(f"\n[warn] batch failed ({e}), retrying in 10s...")
+                time.sleep(10)
+                try:
+                    vectors = _embed_batch(texts, base_url, client)
+                except (httpx.HTTPError, httpx.TimeoutException) as e2:
+                    print(f"[error] batch failed again, skipping: {e2}")
+                    # Mark skipped rows so they aren't retried this run
+                    # (they'll be picked up next run since embedded_at stays NULL)
+                    continue
 
             now = datetime.now(timezone.utc).isoformat()
             for pid, vec in zip(ids, vectors):
@@ -103,7 +145,7 @@ def run(batch_size: int = 16) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Embed mod descriptions")
-    parser.add_argument("--batch-size", type=int, default=16, help="Texts per embedding request")
+    parser.add_argument("--batch-size", type=int, default=4, help="Texts per embedding request")
     args = parser.parse_args()
     run(batch_size=args.batch_size)
 
