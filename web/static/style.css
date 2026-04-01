@@ -26,8 +26,26 @@ header {
   padding: 1.5rem 2rem;
 }
 
+.header-inner {
+  display: flex; justify-content: space-between; align-items: center;
+  max-width: 900px; margin: 0 auto;
+}
+
 header h1 { font-size: 1.6rem; }
 header p  { color: var(--muted); margin-top: 0.25rem; font-size: 0.9rem; }
+
+nav { display: flex; gap: 0.5rem; }
+nav a {
+  padding: 0.4rem 0.9rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: all 0.15s;
+}
+nav a:hover  { border-color: var(--accent); color: var(--text); }
+nav a.active { border-color: var(--accent); color: var(--accent-hi); background: rgba(124,106,247,0.1); }
 
 main { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
 
@@ -125,6 +143,85 @@ button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
   margin-bottom: 1.5rem;
   font-size: 0.9rem;
 }
+
+/* ── Settings page ───────────────────────────────────────── */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.action-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  display: flex; flex-direction: column; gap: 0.75rem;
+}
+.action-card h3 { font-size: 1rem; }
+.action-card p  { font-size: 0.875rem; color: var(--muted); flex: 1; }
+
+.danger-card { border-color: #3d1a1e; }
+
+.card-fields { display: flex; flex-direction: column; gap: 0.5rem; }
+.card-fields label {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 0.8rem; color: var(--muted); gap: 0.5rem;
+}
+.card-fields select, .card-fields input {
+  padding: 0.35rem 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.8rem;
+  flex: 1;
+}
+.card-fields select:focus, .card-fields input:focus { outline: none; border-color: var(--accent); }
+
+.action-card button {
+  padding: 0.5rem 1rem;
+  background: var(--accent);
+  border: none; border-radius: var(--radius);
+  color: #fff; font-size: 0.875rem; cursor: pointer;
+  transition: background 0.15s;
+}
+.action-card button:hover    { background: var(--accent-hi); }
+.action-card button:disabled { opacity: 0.4; cursor: default; }
+.btn-danger { background: var(--danger) !important; }
+.btn-danger:hover { background: #f06270 !important; }
+
+/* ── Job cards ───────────────────────────────────────────── */
+#jobs-section { margin-bottom: 2rem; }
+#jobs-section h2 { margin-bottom: 0.75rem; font-size: 1.1rem; }
+
+.job-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.job-running { border-color: var(--accent); }
+.job-done    { border-color: #3a5c3a; }
+.job-error   { border-color: var(--danger); }
+
+.job-header {
+  display: flex; gap: 0.75rem; align-items: center;
+  margin-bottom: 0.5rem; font-size: 0.8rem;
+}
+.job-type   { font-weight: 600; text-transform: capitalize; }
+.job-status { color: var(--muted); }
+.job-time   { color: var(--muted); margin-left: auto; }
+
+.job-log {
+  font-family: monospace; font-size: 0.75rem; color: var(--muted);
+  max-height: 120px; overflow-y: auto;
+  background: var(--bg); border-radius: 4px; padding: 0.5rem;
+}
+.job-log div { line-height: 1.6; }
+.muted { color: var(--muted); }
 
 /* ── Embedding progress bar ──────────────────────────────── */
 #embed-progress {

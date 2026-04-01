@@ -50,6 +50,14 @@ def init(conn: sqlite3.Connection) -> None:
             value   TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS vector_backups (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            model       TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            data        BLOB NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_projects_loader_version
             ON projects(loader, mc_version);
 
