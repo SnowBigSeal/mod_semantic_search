@@ -1,7 +1,9 @@
 import io
+import json
 import pickle
 import struct
-import threading
+import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +11,7 @@ from typing import Dict, List, Optional
 
 import httpx
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -28,41 +30,65 @@ MODRINTH_URL = "https://modrinth.com/mod"
 EMBED_ENDPOINT = "/v1/embeddings"
 RERANK_ENDPOINT = "/v1/rerank"
 
-# ── job state ─────────────────────────────────────────────────────────────────
+_RUNNER_SCRIPT = str(Path(__file__).parent.parent / "workers" / "runner.py")
+_HEARTBEAT_STALE_SEC = 10
 
-_jobs: Dict[str, dict] = {}
-_jobs_lock = threading.Lock()
+# ── runner auto-spawn ─────────────────────────────────────────────────────────
 
-def _new_job(job_type: str, args: dict) -> str:
-    job_id = str(uuid.uuid4())[:8]
-    with _jobs_lock:
-        _jobs[job_id] = {
-            "id": job_id,
-            "type": job_type,
-            "args": args,
-            "status": "running",
-            "log": [],
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "finished_at": None,
-        }
-    return job_id
+def _runner_alive() -> bool:
+    conn = db.connect()
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = 'runner_heartbeat'"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return False
+    try:
+        ts = datetime.fromisoformat(row["value"])
+        # SQLite stores as naive UTC; make tz-aware for comparison
+        if ts.tzinfo is None:
+            from datetime import timezone as _tz
+            ts = ts.replace(tzinfo=_tz.utc)
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+        return age < _HEARTBEAT_STALE_SEC
+    except Exception:
+        return False
 
-def _job_running(job_type: str) -> bool:
-    with _jobs_lock:
-        return any(j["type"] == job_type and j["status"] == "running" for j in _jobs.values())
 
-def _finish_job(job_id: str, success: bool, msg: str = "") -> None:
-    with _jobs_lock:
-        if job_id in _jobs:
-            _jobs[job_id]["status"] = "done" if success else "error"
-            _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
-            if msg:
-                _jobs[job_id]["log"].append(msg)
+def _spawn_runner() -> None:
+    subprocess.Popen(
+        [sys.executable, "-m", "workers.runner"],
+        cwd=str(Path(__file__).parent.parent),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
 
-def _log(job_id: str, line: str) -> None:
-    with _jobs_lock:
-        if job_id in _jobs:
-            _jobs[job_id]["log"].append(line)
+
+@app.on_event("startup")
+async def _startup() -> None:
+    conn = db.connect()
+    db.init(conn)
+    conn.close()
+    if not _runner_alive():
+        print("[web] Runner not detected — spawning workers.runner")
+        _spawn_runner()
+
+
+async def _watchdog() -> None:
+    """Periodically re-spawn the runner if its heartbeat goes stale."""
+    import asyncio
+    while True:
+        await asyncio.sleep(30)
+        if not _runner_alive():
+            print("[web] Runner heartbeat stale — re-spawning")
+            _spawn_runner()
+
+
+@app.on_event("startup")
+async def _start_watchdog() -> None:
+    import asyncio
+    asyncio.create_task(_watchdog())
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -99,111 +125,15 @@ def _fmt_side(client_side: str, server_side: str) -> str:
     return "+".join(parts) if parts else "unknown"
 
 
-# ── background workers ────────────────────────────────────────────────────────
+# ── conflict groups (mirrored from workers/runner.py) ─────────────────────────
 
-def _run_retrieval(job_id: str, loader: str, version: str, sync: bool) -> None:
-    try:
-        import sys, io as _io
-        buf = _io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buf
-
-        from workers.retrieval import run as retrieval_run
-        retrieval_run(loader=loader, version=version, sync=sync)
-
-        sys.stdout = old_stdout
-        for line in buf.getvalue().splitlines():
-            _log(job_id, line)
-        _finish_job(job_id, True)
-    except Exception as e:
-        import sys as _sys
-        _sys.stdout = _sys.__stdout__
-        _finish_job(job_id, False, f"Error: {e}")
-
-
-def _run_embedding(job_id: str, batch_size: int) -> None:
-    try:
-        import sys, io as _io
-        buf = _io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buf
-
-        from workers.embedding import run as embedding_run
-        embedding_run(batch_size=batch_size)
-
-        sys.stdout = old_stdout
-        for line in buf.getvalue().splitlines():
-            _log(job_id, line)
-        _finish_job(job_id, True)
-    except Exception as e:
-        import sys as _sys
-        _sys.stdout = _sys.__stdout__
-        _finish_job(job_id, False, f"Error: {e}")
-
-
-def _run_pipeline(job_id: str, loader: str, version: str, sync: bool, batch_size: int) -> None:
-    try:
-        import sys, io as _io
-
-        for label, fn, kwargs in [
-            ("retrieval", _run_retrieval, {"loader": loader, "version": version, "sync": sync}),
-            ("embedding", _run_embedding, {"batch_size": batch_size}),
-        ]:
-            _log(job_id, f"=== Starting {label} ===")
-            buf = _io.StringIO()
-            old_stdout = sys.stdout
-            sys.stdout = buf
-
-            if label == "retrieval":
-                from workers.retrieval import run as retrieval_run
-                retrieval_run(loader=loader, version=version, sync=sync)
-            else:
-                from workers.embedding import run as embedding_run
-                embedding_run(batch_size=batch_size)
-
-            sys.stdout = old_stdout
-            for line in buf.getvalue().splitlines():
-                _log(job_id, line)
-
-        _finish_job(job_id, True)
-    except Exception as e:
-        import sys as _sys
-        _sys.stdout = _sys.__stdout__
-        _finish_job(job_id, False, f"Error: {e}")
-
-
-def _run_prune(job_id: str, loader: str, version: str) -> None:
-    try:
-        import sys, io as _io
-        buf = _io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buf
-
-        from workers.retrieval import run as retrieval_run
-        retrieval_run(loader=loader, version=version, prune=True)
-
-        sys.stdout = old_stdout
-        for line in buf.getvalue().splitlines():
-            _log(job_id, line)
-        _finish_job(job_id, True)
-    except Exception as e:
-        import sys as _sys
-        _sys.stdout = _sys.__stdout__
-        _finish_job(job_id, False, f"Error: {e}")
-
-
-def _run_reset(job_id: str) -> None:
-    try:
-        conn = db.connect()
-        conn.execute("DELETE FROM embeddings")
-        conn.execute("UPDATE projects SET embedded_at = NULL")
-        conn.commit()
-        total = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
-        conn.close()
-        _log(job_id, f"Reset complete. {total} mods queued for re-embedding.")
-        _finish_job(job_id, True)
-    except Exception as e:
-        _finish_job(job_id, False, f"Error: {e}")
+_CONFLICT_GROUPS = {
+    "retrieval": {"retrieval"},
+    "prune":     {"retrieval"},
+    "embedding": {"embedding"},
+    "reset":     {"embedding"},
+    "pipeline":  {"retrieval", "embedding"},
+}
 
 
 # ── pages ─────────────────────────────────────────────────────────────────────
@@ -274,6 +204,8 @@ async def status():
 
 # ── API: jobs ─────────────────────────────────────────────────────────────────
 
+# ── API: jobs ─────────────────────────────────────────────────────────────────
+
 class JobRequest(BaseModel):
     action: str
     loader: Optional[str] = None
@@ -284,57 +216,71 @@ class JobRequest(BaseModel):
 @app.post("/api/jobs/start")
 async def start_job(req: JobRequest):
     action = req.action
-
-    CONFLICT_GROUPS = {
-        "retrieval": "retrieval",
-        "embedding": "embedding",
-        "pipeline": "pipeline",
-        "prune": "retrieval",
-        "reset": "embedding",
-    }
-    group = CONFLICT_GROUPS.get(action, action)
-    if _job_running(group):
-        raise HTTPException(409, f"A {group} job is already running")
-
-    job_id = _new_job(group, req.dict())
-
-    if action == "retrieval":
-        t = threading.Thread(target=_run_retrieval, args=(job_id, req.loader, req.version, req.sync), daemon=True)
-    elif action == "embedding":
-        t = threading.Thread(target=_run_embedding, args=(job_id, req.batch_size), daemon=True)
-    elif action == "pipeline":
-        t = threading.Thread(target=_run_pipeline, args=(job_id, req.loader, req.version, req.sync, req.batch_size), daemon=True)
-    elif action == "prune":
-        t = threading.Thread(target=_run_prune, args=(job_id, req.loader, req.version), daemon=True)
-    elif action == "reset":
-        t = threading.Thread(target=_run_reset, args=(job_id,), daemon=True)
-    else:
+    if action not in _CONFLICT_GROUPS:
         raise HTTPException(400, f"Unknown action: {action}")
 
-    t.start()
+    conn = db.connect()
+    running_types = [
+        r["type"] for r in conn.execute(
+            "SELECT type FROM jobs WHERE status = 'running'"
+        ).fetchall()
+    ]
+    running_groups: set = set()
+    for t in running_types:
+        running_groups |= _CONFLICT_GROUPS.get(t, {t})
+
+    job_groups = _CONFLICT_GROUPS[action]
+    if job_groups & running_groups:
+        conn.close()
+        conflict = next(iter(job_groups & running_groups))
+        raise HTTPException(409, f"A {conflict} job is already running")
+
+    job_id = str(uuid.uuid4())[:8]
+    args = {
+        "loader":     req.loader,
+        "version":    req.version,
+        "sync":       req.sync,
+        "batch_size": req.batch_size,
+    }
+    conn.execute(
+        "INSERT INTO jobs (id, type, args) VALUES (?, ?, ?)",
+        (job_id, action, json.dumps(args)),
+    )
+    conn.commit()
+    conn.close()
     return {"job_id": job_id}
 
 
 @app.get("/api/jobs/status")
 async def jobs_status():
-    import time as _time
-    now_ts = _time.time()
-    with _jobs_lock:
-        # Auto-evict completed/errored jobs after 30 seconds
-        to_evict = []
-        for jid, j in _jobs.items():
-            if j["status"] in ("done", "error") and j.get("finished_at"):
-                try:
-                    from datetime import datetime as _dt
-                    fin = _dt.fromisoformat(j["finished_at"]).timestamp()
-                    if now_ts - fin > 30:
-                        to_evict.append(jid)
-                except Exception:
-                    pass
-        for jid in to_evict:
-            del _jobs[jid]
-        recent = sorted(_jobs.values(), key=lambda j: j["started_at"], reverse=True)[:20]
-        return {"jobs": [dict(j) for j in recent]}
+    conn = db.connect()
+    # Jobs that are running, or finished within the last 30 seconds
+    jobs = conn.execute("""
+        SELECT id, type, args, status, started_at, finished_at, created_at
+        FROM jobs
+        WHERE status IN ('pending', 'running')
+           OR (status IN ('done', 'error')
+               AND finished_at >= datetime('now', '-30 seconds'))
+        ORDER BY created_at DESC
+        LIMIT 20
+    """).fetchall()
+
+    result = []
+    for j in jobs:
+        last_log = conn.execute(
+            "SELECT line FROM job_logs WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+            (j["id"],),
+        ).fetchone()
+        result.append({
+            "id":          j["id"],
+            "type":        j["type"],
+            "status":      j["status"],
+            "log":         [last_log["line"]] if last_log else [],
+            "started_at":  j["started_at"],
+            "finished_at": j["finished_at"],
+        })
+    conn.close()
+    return {"jobs": result}
 
 
 # ── API: backups ──────────────────────────────────────────────────────────────

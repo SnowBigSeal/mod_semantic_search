@@ -63,5 +63,25 @@ def init(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_projects_embedded
             ON projects(embedded_at);
+
+        CREATE TABLE IF NOT EXISTS jobs (
+            id          TEXT PRIMARY KEY,
+            type        TEXT NOT NULL,
+            args        TEXT NOT NULL DEFAULT '{}',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            started_at  TEXT,
+            finished_at TEXT,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS job_logs (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id     TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            line       TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+        CREATE INDEX IF NOT EXISTS idx_job_logs_job ON job_logs(job_id);
     """)
     conn.commit()
