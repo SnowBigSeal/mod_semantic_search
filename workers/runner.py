@@ -151,6 +151,18 @@ def _beat(conn) -> None:
     conn.commit()
 
 
+def _heartbeat_thread() -> None:
+    """Runs on a daemon thread so the heartbeat updates even during long jobs."""
+    while True:
+        try:
+            conn = db.connect()
+            _beat(conn)
+            conn.close()
+        except Exception:
+            pass
+        time.sleep(HEARTBEAT_INTERVAL)
+
+
 def _recover_orphans(conn) -> None:
     """On startup, mark any stale running jobs as error (previous crash)."""
     cur = conn.execute(
@@ -163,20 +175,20 @@ def _recover_orphans(conn) -> None:
 
 
 def main() -> None:
+    import threading
     conn = db.connect()
     db.init(conn)
     _recover_orphans(conn)
+    conn.close()
 
-    last_beat = 0.0
+    # Heartbeat runs independently so long jobs don't block it
+    t = threading.Thread(target=_heartbeat_thread, daemon=True)
+    t.start()
+
     print("[runner] Started. Polling for jobs…")
 
     while True:
-        now = time.time()
-
-        # Heartbeat
-        if now - last_beat >= HEARTBEAT_INTERVAL:
-            _beat(conn)
-            last_beat = now
+        conn = db.connect()
 
         # Check for a claimable pending job
         running = _running_groups(conn)
@@ -190,6 +202,7 @@ def main() -> None:
             if job_groups & running:
                 continue  # conflict — skip
             if _claim_job(conn, row["id"]):
+                conn.close()
                 args = json.loads(row["args"])
                 print(f"[runner] Starting job {row['id']} ({row['type']})")
                 _run_job(row["id"], row["type"], args)
@@ -198,6 +211,7 @@ def main() -> None:
                 break  # re-poll after each job
 
         if not claimed:
+            conn.close()
             time.sleep(POLL_INTERVAL)
 
 

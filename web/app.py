@@ -31,7 +31,7 @@ EMBED_ENDPOINT = "/v1/embeddings"
 RERANK_ENDPOINT = "/v1/rerank"
 
 _RUNNER_SCRIPT = str(Path(__file__).parent.parent / "workers" / "runner.py")
-_HEARTBEAT_STALE_SEC = 10
+_HEARTBEAT_STALE_SEC = 30
 
 # ── runner auto-spawn ─────────────────────────────────────────────────────────
 
