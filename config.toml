@@ -7,7 +7,7 @@ reranker_url  = "http://cuda.lan:8083"   # Qwen3-Reranker-4B
 
 [modrinth]
 # Identifies your app to Modrinth — update with your info
-user_agent = "steve/mod-search/1.0.0 (contact@example.com)"
+user_agent = "SnowBigSeal/mod_semantic_search/1.0.0 (https://github.com/SnowBigSeal/mod_semantic_search)"
 
 [search]
 # Number of candidates to fetch before reranking
