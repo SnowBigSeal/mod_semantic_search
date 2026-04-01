@@ -87,6 +87,31 @@
 </main>
 
 <script>
+// Rolling window of {embedded, timestamp} samples for rate estimation
+const _rateSamples = [];
+const SAMPLE_WINDOW = 5; // use last N samples for rolling average
+
+function _formatEta(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0)  return `~${h}h ${m}m`;
+  if (m > 0)  return `~${m}m ${s}s`;
+  return `~${s}s`;
+}
+
+function _computeEta(embedded, pending) {
+  if (_rateSamples.length < 2) return null;
+  const oldest = _rateSamples[0];
+  const newest = _rateSamples[_rateSamples.length - 1];
+  const deltaEmbedded = newest.embedded - oldest.embedded;
+  const deltaSec = (newest.ts - oldest.ts) / 1000;
+  if (deltaEmbedded <= 0 || deltaSec <= 0) return null;
+  const ratePerSec = deltaEmbedded / deltaSec;
+  return _formatEta(pending / ratePerSec);
+}
+
 async function loadStatus() {
   try {
     const data = await (await fetch('/api/status')).json();
@@ -98,16 +123,30 @@ async function loadStatus() {
     // Progress bar
     const progressEl = document.getElementById('embed-progress');
     if (data.pending_embedding > 0 && data.total > 0) {
+      // Record sample for rate calculation
+      _rateSamples.push({ embedded: data.embedded, ts: Date.now() });
+      if (_rateSamples.length > SAMPLE_WINDOW) _rateSamples.shift();
+
       const pct = Math.round((data.embedded / data.total) * 100);
       document.getElementById('progress-bar').style.width = pct + '%';
       document.getElementById('progress-pct').textContent = pct + '%';
+
+      const eta = _computeEta(data.embedded, data.pending_embedding);
+      const etaStr = eta ? ` · ETA ${eta}` : '';
       document.getElementById('progress-label').textContent =
-        `Embedding in progress — ${data.embedded.toLocaleString()} / ${data.total.toLocaleString()}`;
+        `Embedding in progress — ${data.embedded.toLocaleString()} / ${data.total.toLocaleString()}${etaStr}`;
+
       progressEl.hidden = false;
-      // Keep polling while embedding is active
       setTimeout(loadStatus, 5000);
     } else {
-      progressEl.hidden = true;
+      _rateSamples.length = 0;
+      progressEl.hidden = data.total === 0;
+      if (data.total > 0) {
+        document.getElementById('progress-bar').style.width = '100%';
+        document.getElementById('progress-pct').textContent = '100%';
+        document.getElementById('progress-label').textContent = `Embedding complete — ${data.embedded.toLocaleString()} mods`;
+        progressEl.hidden = false;
+      }
     }
 
     if (data.breakdown.length > 0) {
