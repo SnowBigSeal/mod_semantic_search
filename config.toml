@@ -13,5 +13,6 @@ user_agent = "SnowBigSeal/mod_semantic_search/1.0.0 (https://github.com/SnowBigS
 # Number of candidates to fetch before reranking
 candidate_pool = 50
 
-[storage]
-mods_db = "F:/mod-search/mods.db"
+[web]
+host = "127.0.0.1"
+port = 8000

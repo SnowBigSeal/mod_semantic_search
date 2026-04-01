@@ -15,5 +15,9 @@ candidate_pool = 50
 # Final number of results to display
 top_k = 10
 
+[web]
+host = "127.0.0.1"
+port = 8000
+
 [storage]
 mods_db = "F:/mod-search/mods.db"
