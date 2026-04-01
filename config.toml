@@ -16,3 +16,6 @@ candidate_pool = 50
 [web]
 host = "127.0.0.1"
 port = 8000
+
+[storage]
+mods_db = "F:/mod-search/mods.db"
