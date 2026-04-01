@@ -23,11 +23,7 @@
 
 <main>
 
-  <!-- Active jobs -->
-  <section id="jobs-section" hidden>
-    <h2>Active Jobs</h2>
-    <div id="jobs-list"></div>
-  </section>
+{% include '_jobs_widget.html' %}
 
   <!-- Action cards -->
   <div class="card-grid">
@@ -119,13 +115,10 @@
 </main>
 
 <script>
-let _pollTimer = null;
-
 function _val(id) { return document.getElementById(id)?.value; }
 
 async function startJob(action) {
   const body = { action };
-
   if (['retrieval','pipeline','prune'].includes(action)) {
     body.loader  = _val(`${action}-loader`);
     body.version = _val(`${action}-version`);
@@ -136,7 +129,6 @@ async function startJob(action) {
   if (['embedding','pipeline'].includes(action)) {
     body.batch_size = parseInt(_val(`${action}-batch`));
   }
-
   try {
     const res = await fetch('/api/jobs/start', {
       method: 'POST',
@@ -148,7 +140,6 @@ async function startJob(action) {
       alert(`Failed to start job: ${err.detail}`);
       return;
     }
-    startPolling();
   } catch(e) {
     alert('Request failed: ' + e.message);
   }
@@ -187,71 +178,26 @@ async function restoreBackup() {
   }
 }
 
-function startPolling() {
-  if (_pollTimer) return;
-  _pollTimer = setInterval(pollJobs, 2000);
-  pollJobs();
-}
-
-async function pollJobs() {
+// Update button states whenever the banner widget polls
+const _origPoll = window._bannerPollHook;
+async function _updateButtons() {
   try {
     const data = await (await fetch('/api/jobs/status')).json();
-    renderJobs(data.jobs);
-
-    const anyRunning = data.jobs.some(j => j.status === 'running');
-    if (!anyRunning) {
-      clearInterval(_pollTimer);
-      _pollTimer = null;
-    }
-
-    // Enable/disable buttons
     document.querySelectorAll('button[data-job]').forEach(btn => {
       const type = btn.dataset.job;
       const running = data.jobs.some(j => j.type === type && j.status === 'running');
       btn.disabled = running;
-      btn.textContent = running
-        ? `Running…`
-        : btn.textContent.replace('Running…', btn.dataset.label || btn.textContent);
+      btn.textContent = running ? 'Running…' : (btn.dataset.label || btn.textContent);
     });
-  } catch(e) { console.error(e); }
+  } catch(e) {}
 }
 
-function renderJobs(jobs) {
-  const section = document.getElementById('jobs-section');
-  const list = document.getElementById('jobs-list');
-
-  if (!jobs.length) { section.hidden = true; return; }
-  section.hidden = false;
-
-  list.innerHTML = jobs.map(j => {
-    const statusClass = j.status === 'running' ? 'job-running' : j.status === 'done' ? 'job-done' : 'job-error';
-    const logHtml = j.log.slice(-30).map(l => `<div>${escHtml(l)}</div>`).join('');
-    return `
-      <div class="job-card ${statusClass}">
-        <div class="job-header">
-          <span class="job-type">${j.type}</span>
-          <span class="job-status">${j.status}</span>
-          <span class="job-time">${j.started_at.replace('T',' ').slice(0,19)}</span>
-        </div>
-        <div class="job-log">${logHtml || '<span class="muted">Starting…</span>'}</div>
-      </div>`;
-  }).join('');
-
-  // Auto-scroll each log to bottom
-  list.querySelectorAll('.job-log').forEach(el => { el.scrollTop = el.scrollHeight; });
-}
-
-function escHtml(str) {
-  return (str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-// Store original button labels
+// Store labels and start button polling
 document.querySelectorAll('button[data-job]').forEach(btn => {
-  btn.dataset.label = btn.textContent;
+  btn.dataset.label = btn.textContent.trim();
 });
-
-// Start polling if there are already running jobs on page load
-pollJobs();
+setInterval(_updateButtons, 3000);
+_updateButtons();
 </script>
 </body>
 </html>

@@ -317,8 +317,22 @@ async def start_job(req: JobRequest):
 
 @app.get("/api/jobs/status")
 async def jobs_status():
+    import time as _time
+    now_ts = _time.time()
     with _jobs_lock:
-        # Return most recent 20 jobs
+        # Auto-evict completed/errored jobs after 30 seconds
+        to_evict = []
+        for jid, j in _jobs.items():
+            if j["status"] in ("done", "error") and j.get("finished_at"):
+                try:
+                    from datetime import datetime as _dt
+                    fin = _dt.fromisoformat(j["finished_at"]).timestamp()
+                    if now_ts - fin > 30:
+                        to_evict.append(jid)
+                except Exception:
+                    pass
+        for jid in to_evict:
+            del _jobs[jid]
         recent = sorted(_jobs.values(), key=lambda j: j["started_at"], reverse=True)[:20]
         return {"jobs": [dict(j) for j in recent]}
 
