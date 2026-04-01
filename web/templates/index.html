@@ -100,7 +100,7 @@
 <script>
 // Rolling window of {embedded, timestamp} samples for rate estimation
 const _rateSamples = [];
-const SAMPLE_WINDOW = 5; // use last N samples for rolling average
+const SAMPLE_WINDOW = 16; // use last N samples for rolling average
 
 function _formatEta(seconds) {
   if (!isFinite(seconds) || seconds <= 0) return null;
@@ -114,13 +114,15 @@ function _formatEta(seconds) {
 
 function _computeEta(embedded, pending) {
   if (_rateSamples.length < 2) return null;
-  const oldest = _rateSamples[0];
-  const newest = _rateSamples[_rateSamples.length - 1];
-  const deltaEmbedded = newest.embedded - oldest.embedded;
-  const deltaSec = (newest.ts - oldest.ts) / 1000;
-  if (deltaEmbedded <= 0 || deltaSec <= 0) return null;
-  const ratePerSec = deltaEmbedded / deltaSec;
-  return _formatEta(pending / ratePerSec);
+  // Average the rate across each consecutive pair of samples
+  let totalRate = 0, count = 0;
+  for (let i = 1; i < _rateSamples.length; i++) {
+    const dEmbedded = _rateSamples[i].embedded - _rateSamples[i - 1].embedded;
+    const dSec = (_rateSamples[i].ts - _rateSamples[i - 1].ts) / 1000;
+    if (dEmbedded > 0 && dSec > 0) { totalRate += dEmbedded / dSec; count++; }
+  }
+  if (count === 0) return null;
+  return _formatEta(pending / (totalRate / count));
 }
 
 async function loadStatus() {
