@@ -54,6 +54,14 @@ def checked_get(client: httpx.Client, url: str, **kwargs) -> httpx.Response:
     for attempt in range(1, MAX_RETRIES + 1):
         resp = client.get(url, **kwargs)
 
+        if resp.status_code == 400:
+            try:
+                body = resp.json()
+                msg = f"{body.get('error', 'bad_request')}: {body.get('description', resp.text)}"
+            except Exception:
+                msg = resp.text
+            raise ValueError(f"Modrinth API returned 400 — {msg}")
+
         if resp.status_code == 410:
             raise APIDeprecatedError(
                 "Modrinth returned HTTP 410 — the API version in use has been deprecated.\n"

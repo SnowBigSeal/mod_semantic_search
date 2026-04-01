@@ -34,7 +34,7 @@ def _search_all(loader: str, version: str, user_agent: str, since: Optional[str]
         ["project_type:mod"],
     ]
     if since:
-        facets.append([f"modified_timestamp>={_to_unix(since)}"])
+        facets.append([f"date_modified>={since}"])
 
     params = {
         "facets": json.dumps(facets),
@@ -96,11 +96,6 @@ def _fetch_bodies(project_ids: list[str], user_agent: str) -> dict[str, str]:
 
     print()
     return bodies
-
-
-def _to_unix(iso: str) -> int:
-    return int(datetime.fromisoformat(iso).timestamp())
-
 
 def _upsert_projects(conn, hits: list[dict], bodies: dict[str, str], loader: str, version: str) -> int:
     now = datetime.now(timezone.utc).isoformat()
