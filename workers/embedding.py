@@ -79,7 +79,7 @@ def _build_text(row, max_chars: int) -> str:
     return text[:max_chars]
 
 
-def run(batch_size: int = 4) -> None:
+def run(batch_size: int = 32) -> None:
     cfg = config.load()
     base_url = cfg["inference"]["embedding_url"].rstrip("/")
 
@@ -145,7 +145,7 @@ def run(batch_size: int = 4) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Embed mod descriptions")
-    parser.add_argument("--batch-size", type=int, default=4, help="Texts per embedding request")
+    parser.add_argument("--batch-size", type=int, default=32, help="Texts per embedding request")
     args = parser.parse_args()
     run(batch_size=args.batch_size)
 
