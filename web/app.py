@@ -28,7 +28,6 @@ templates = Jinja2Templates(directory=_BASE / "templates")
 
 MODRINTH_URL = "https://modrinth.com/mod"
 EMBED_ENDPOINT = "/v1/embeddings"
-RERANK_ENDPOINT = "/v1/rerank"
 
 _RUNNER_SCRIPT = str(Path(__file__).parent.parent / "workers" / "runner.py")
 _HEARTBEAT_STALE_SEC = 30
@@ -108,22 +107,53 @@ def _embed(text: str, base_url: str) -> np.ndarray:
     return np.array(r.json()["data"][0]["embedding"], dtype=np.float32)
 
 def _rerank(query: str, docs: list, base_url: str) -> list:
-    with httpx.Client(timeout=120) as client:
-        r = client.post(f"{base_url}{RERANK_ENDPOINT}", json={"query": query, "documents": docs})
-        r.raise_for_status()
-    body = r.json()
-    # llama.cpp uses "results"; some builds use "data"
-    items = body.get("results") or body.get("data") or []
-    if not items:
-        print(f"[rerank] Unexpected response format: {list(body.keys())}")
-        return [0.0] * len(docs)
+    """
+    Qwen3-Reranker scoring via /v1/completions with logprobs.
+    Formats each query-doc pair with the Qwen3 chat template, forces the
+    model to predict yes/no, and returns softmax(yes, no) as the score.
+    Requests are fired in parallel (up to 16 at a time).
+    """
+    import math
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _SYS = (
+        "Judge whether the Document meets the requirements based on the "
+        "Query and the Instruct, and give a judgment result of yes or no."
+    )
+    _INSTR = "Retrieve relevant documents for the query."
+    _URL = f"{base_url}/v1/completions"
+
+    def _score_one(idx: int, doc: str):
+        prompt = (
+            f"<|im_start|>system\n{_SYS}<|im_end|>\n"
+            f"<|im_start|>user\n"
+            f"<Instruct>: {_INSTR}\n"
+            f"<Query>: {query}\n"
+            f"<Document>: {doc}"
+            f"<|im_end|>\n"
+            f"<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        )
+        with httpx.Client(timeout=60) as client:
+            r = client.post(_URL, json={"prompt": prompt, "max_tokens": 1, "logprobs": 5, "temperature": 0})
+            r.raise_for_status()
+        top = r.json()["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+        # Gather logprobs for yes/no variants
+        lp = {t["token"].lower(): t["logprob"] for t in top}
+        yes_lp = lp.get("yes", -20.0)
+        no_lp  = lp.get("no",  -20.0)
+        # Softmax over just yes/no
+        yes_p = math.exp(yes_lp) / (math.exp(yes_lp) + math.exp(no_lp))
+        return idx, yes_p
+
     scores = [0.0] * len(docs)
-    for item in items:
-        idx = item.get("index", 0)
-        # llama.cpp field is "relevance_score"; some builds use "score"
-        score = item.get("relevance_score") or item.get("score") or 0.0
-        if idx < len(scores):
-            scores[idx] = float(score)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futures = {pool.submit(_score_one, i, doc): i for i, doc in enumerate(docs)}
+        for fut in as_completed(futures):
+            try:
+                idx, score = fut.result()
+                scores[idx] = score
+            except Exception as exc:
+                print(f"[rerank] doc {futures[fut]} failed: {exc}")
     return scores
 
 def _fmt_side(client_side: str, server_side: str) -> str:
@@ -474,7 +504,6 @@ async def search(
     rerank_scores = _rerank(query, docs, rerank_url)
 
     # If reranker returned all zeros fall back to cosine similarity scores
-    cosine_candidate_scores = [float(scores[i]) for i in candidate_indices]
     if all(s == 0.0 for s in rerank_scores):
         print("[rerank] All scores zero — falling back to cosine similarity")
         rerank_scores = cosine_candidate_scores
