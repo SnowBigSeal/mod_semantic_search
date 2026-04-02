@@ -12,6 +12,14 @@ user_agent = "SnowBigSeal/mod_semantic_search/1.0.0 (https://github.com/SnowBigS
 [search]
 # Number of candidates to fetch before reranking
 candidate_pool = 50
+# Cosine similarity threshold for query cache hits (0.0–1.0)
+cache_threshold = 0.97
+# Enable LLM query expansion (adds ~1s but significantly improves results)
+expansion = true
+
+[web]
+host = "127.0.0.1"
+port = 8000
 
 [storage]
 mods_db = "F:/mod-search/mods.db"

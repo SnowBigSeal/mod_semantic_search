@@ -1,0 +1,42 @@
+<!-- Active jobs banner — included in every page -->
+<div id="jobs-banner" hidden>
+  <div id="jobs-banner-inner"></div>
+</div>
+
+<script>
+(function() {
+  let _bannerTimer = null;
+
+  function _escHtml(str) {
+    return (str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  async function pollActivejobs() {
+    try {
+      const data = await (await fetch('/api/jobs/status')).json();
+      const running = data.jobs.filter(j => j.status === 'running');
+      const banner = document.getElementById('jobs-banner');
+      const inner  = document.getElementById('jobs-banner-inner');
+
+      if (running.length === 0) {
+        banner.hidden = true;
+        return;
+      }
+
+      banner.hidden = false;
+      inner.innerHTML = running.map(j => {
+        const lastLine = j.log.length ? _escHtml(j.log[j.log.length - 1]) : 'Starting…';
+        return `<div class="banner-job">
+          <span class="banner-spinner"></span>
+          <strong>${_escHtml(j.type)}</strong>
+          <span class="banner-log">${lastLine}</span>
+        </div>`;
+      }).join('');
+    } catch(e) { /* silently ignore */ }
+    _bannerTimer = setTimeout(pollActivejobs, 3000);
+  }
+
+  // Kick off immediately
+  pollActivejobs();
+})();
+</script>

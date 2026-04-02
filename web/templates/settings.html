@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings — Mod Semantic Search</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div>
+      <h1>⚙️ Settings</h1>
+      <p>Trigger operations and manage vector backups</p>
+    </div>
+    <nav>
+      <a href="/">🔍 Search</a>
+      <a href="/settings" class="active">⚙️ Settings</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+{% include '_jobs_widget.html' %}
+
+  <!-- Action cards -->
+  <div class="card-grid">
+
+    <!-- Full Pipeline -->
+    <div class="action-card">
+      <h3>🚀 Full Pipeline</h3>
+      <p>Run retrieval then embedding in sequence.</p>
+      <div class="card-fields">
+        <label>Loader <select id="pipeline-loader">{% for l in loaders %}<option>{{ l }}</option>{% endfor %}</select></label>
+        <label>Version <select id="pipeline-version">{% for v in versions %}<option>{{ v }}</option>{% endfor %}</select></label>
+        <label>Mode <select id="pipeline-sync"><option value="false">Full fetch</option><option value="true">Incremental</option></select></label>
+        <label>Batch size <select id="pipeline-batch"><option value="4">4</option><option value="16">16</option><option value="32" selected>32</option></select></label>
+      </div>
+      <button onclick="startJob('pipeline')" data-job="pipeline">Run Pipeline</button>
+    </div>
+
+    <!-- Retrieval -->
+    <div class="action-card">
+      <h3>📥 Retrieval</h3>
+      <p>Fetch mods from Modrinth into the database.</p>
+      <div class="card-fields">
+        <label>Loader <select id="retrieval-loader">{% for l in loaders %}<option>{{ l }}</option>{% endfor %}</select></label>
+        <label>Version <select id="retrieval-version">{% for v in versions %}<option>{{ v }}</option>{% endfor %}</select></label>
+        <label>Mode <select id="retrieval-sync"><option value="false">Full fetch</option><option value="true">Incremental</option></select></label>
+      </div>
+      <button onclick="startJob('retrieval')" data-job="retrieval">Run Retrieval</button>
+    </div>
+
+    <!-- Embedding -->
+    <div class="action-card">
+      <h3>🧠 Embedding</h3>
+      <p>Generate vectors for all un-embedded mods.</p>
+      <div class="card-fields">
+        <label>Batch size <select id="embedding-batch"><option value="4">4</option><option value="16">16</option><option value="32" selected>32</option></select></label>
+      </div>
+      <button onclick="startJob('embedding')" data-job="embedding">Run Embedding</button>
+    </div>
+
+    <!-- Prune -->
+    <div class="action-card">
+      <h3>✂️ Prune Deleted</h3>
+      <p>Check Modrinth for removed mods and delete them from the DB.</p>
+      <div class="card-fields">
+        <label>Loader <select id="prune-loader">{% for l in loaders %}<option>{{ l }}</option>{% endfor %}</select></label>
+        <label>Version <select id="prune-version">{% for v in versions %}<option>{{ v }}</option>{% endfor %}</select></label>
+      </div>
+      <button onclick="startJob('prune')" data-job="prune">Run Prune</button>
+    </div>
+
+    <!-- Reset Embeddings -->
+    <div class="action-card danger-card">
+      <h3>🗑️ Reset Embeddings</h3>
+      <p>Delete all stored vectors. Mods will need to be re-embedded.</p>
+      <button onclick="confirmReset()" data-job="reset" class="btn-danger">Reset All Embeddings</button>
+    </div>
+
+    <!-- Create Backup -->
+    <div class="action-card">
+      <h3>💾 Create Backup</h3>
+      <p>Snapshot current embeddings + model info into the database.</p>
+      <div class="card-fields">
+        <label>Name <input type="text" id="backup-name" placeholder="auto (timestamp)"></label>
+      </div>
+      <button onclick="createBackup()">Create Backup</button>
+    </div>
+
+    <!-- Restore Backup -->
+    <div class="action-card">
+      <h3>🔄 Restore Backup</h3>
+      <p>Replace current embeddings from a saved backup.</p>
+      <div class="card-fields">
+        <label>Backup
+          <select id="backup-select">
+            {% if backups %}
+              {% for b in backups %}
+              <option value="{{ b.id }}">{{ b.name }} — {{ b.model.split('/')[-2] if '/' in b.model else b.model }} ({{ b.created_at[:10] }})</option>
+              {% endfor %}
+            {% else %}
+              <option disabled>No backups yet</option>
+            {% endif %}
+          </select>
+        </label>
+      </div>
+      <button onclick="restoreBackup()" {% if not backups %}disabled{% endif %}>Restore Backup</button>
+    </div>
+
+  </div>
+</main>
+
+<script>
+function _val(id) { return document.getElementById(id)?.value; }
+
+async function startJob(action) {
+  const body = { action };
+  if (['retrieval','pipeline','prune'].includes(action)) {
+    body.loader  = _val(`${action}-loader`);
+    body.version = _val(`${action}-version`);
+  }
+  if (['retrieval','pipeline'].includes(action)) {
+    body.sync = _val(`${action}-sync`) === 'true';
+  }
+  if (['embedding','pipeline'].includes(action)) {
+    body.batch_size = parseInt(_val(`${action}-batch`));
+  }
+  try {
+    const res = await fetch('/api/jobs/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(`Failed to start job: ${err.detail}`);
+      return;
+    }
+  } catch(e) {
+    alert('Request failed: ' + e.message);
+  }
+}
+
+async function confirmReset() {
+  if (!confirm('Delete ALL embeddings? This cannot be undone.')) return;
+  await startJob('reset');
+}
+
+async function createBackup() {
+  const name = document.getElementById('backup-name').value.trim() || null;
+  const params = name ? `?name=${encodeURIComponent(name)}` : '';
+  try {
+    const res = await fetch(`/api/backups/create${params}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert('Backup failed: ' + data.detail); return; }
+    alert(`Backup created: ${data.name} (${data.count} vectors)`);
+    location.reload();
+  } catch(e) {
+    alert('Backup failed: ' + e.message);
+  }
+}
+
+async function restoreBackup() {
+  const id = _val('backup-select');
+  if (!id) return;
+  if (!confirm('Replace all current embeddings with this backup?')) return;
+  try {
+    const res = await fetch(`/api/backups/${id}/restore`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert('Restore failed: ' + data.detail); return; }
+    alert(`Restored ${data.restored} vectors from "${data.from}"`);
+  } catch(e) {
+    alert('Restore failed: ' + e.message);
+  }
+}
+
+// Update button states whenever the banner widget polls
+const _origPoll = window._bannerPollHook;
+async function _updateButtons() {
+  try {
+    const data = await (await fetch('/api/jobs/status')).json();
+    document.querySelectorAll('button[data-job]').forEach(btn => {
+      const type = btn.dataset.job;
+      const running = data.jobs.some(j => j.type === type && j.status === 'running');
+      btn.disabled = running;
+      btn.textContent = running ? 'Running…' : (btn.dataset.label || btn.textContent);
+    });
+  } catch(e) {}
+}
+
+// Store labels and start button polling
+document.querySelectorAll('button[data-job]').forEach(btn => {
+  btn.dataset.label = btn.textContent.trim();
+});
+setInterval(_updateButtons, 3000);
+_updateButtons();
+</script>
+</body>
+</html>

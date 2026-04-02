@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mod Semantic Search</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div>
+      <h1>🔍 Mod Semantic Search</h1>
+      <p>Natural language search across Modrinth mods</p>
+    </div>
+    <nav>
+      <a href="/" class="active">🔍 Search</a>
+      <a href="/settings">⚙️ Settings</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+{% include '_jobs_widget.html' %}
+
+  <!-- Search panel -->
+  <section id="search-panel">
+    <form id="search-form" onsubmit="doSearch(event)">
+      <div class="form-row" style="position:relative">
+        <input
+          type="text"
+          id="query"
+          name="query"
+          placeholder="e.g. tech automation with power grids"
+          autocomplete="off"
+          required
+        >
+        <button type="submit" id="search-btn">Search</button>
+        <div id="history-dropdown" class="history-dropdown" hidden></div>
+      </div>
+      <div class="form-row filters">
+        <label>
+          Loader
+          <select id="loader">
+            {% for l in loaders %}
+            <option value="{{ l }}">{{ l }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Version
+          <select id="version">
+            {% for v in versions %}
+            <option value="{{ v }}">{{ v }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Results
+          <select id="top">
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+      </div>
+    </form>
+  </section>
+
+  <!-- Results -->
+  <section id="results-section" hidden>
+    <h2>Results <span id="results-meta"></span> <button id="copy-json-btn" class="copy-json-btn" onclick="copyJson()" title="Copy raw JSON">⎘ Copy JSON</button></h2>
+    <div id="results-list"></div>
+  </section>
+
+  <!-- Error -->
+  <div id="error-box" class="error-box" hidden></div>
+
+  <!-- Status -->
+  <section id="status-panel">
+    <h2>Database Status</h2>
+    <div id="status-content" class="status-grid">
+      <div class="stat-card" id="stat-total"><span class="stat-label">Total mods</span><span class="stat-value">—</span></div>
+      <div class="stat-card" id="stat-embedded"><span class="stat-label">Embedded</span><span class="stat-value">—</span></div>
+      <div class="stat-card" id="stat-pending"><span class="stat-label">Pending</span><span class="stat-value">—</span></div>
+      <div class="stat-card" id="stat-sync"><span class="stat-label">Last sync</span><span class="stat-value">—</span></div>
+    </div>
+    <div id="inference-health" class="inference-health">
+      <span class="health-pill" id="health-embedder" data-state="checking">⬤ Embedder</span>
+      <span class="health-pill" id="health-reranker" data-state="checking">⬤ Reranker</span>
+    </div>
+    <div id="embed-progress" hidden>
+      <div class="progress-header">
+        <span id="progress-label">Embedding in progress…</span>
+        <span id="progress-pct"></span>
+      </div>
+      <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+    <div id="breakdown-table"></div>
+  </section>
+</main>
+
+<script>
+// Rolling window of {embedded, timestamp} samples for rate estimation
+const _rateSamples = [];
+const SAMPLE_WINDOW = 16; // use last N samples for rolling average
+
+function _formatEta(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0)  return `~${h}h ${m}m`;
+  if (m > 0)  return `~${m}m ${s}s`;
+  return `~${s}s`;
+}
+
+function _computeEta(embedded, pending) {
+  if (_rateSamples.length < 2) return null;
+  // Average the rate across each consecutive pair of samples
+  let totalRate = 0, count = 0;
+  for (let i = 1; i < _rateSamples.length; i++) {
+    const dEmbedded = _rateSamples[i].embedded - _rateSamples[i - 1].embedded;
+    const dSec = (_rateSamples[i].ts - _rateSamples[i - 1].ts) / 1000;
+    if (dEmbedded > 0 && dSec > 0) { totalRate += dEmbedded / dSec; count++; }
+  }
+  if (count === 0) return null;
+  return _formatEta(pending / (totalRate / count));
+}
+
+async function loadStatus() {
+  try {
+    const data = await (await fetch('/api/status')).json();
+    document.querySelector('#stat-total .stat-value').textContent = data.total.toLocaleString();
+    document.querySelector('#stat-embedded .stat-value').textContent = data.embedded.toLocaleString();
+    document.querySelector('#stat-pending .stat-value').textContent = data.pending_embedding.toLocaleString();
+    document.querySelector('#stat-sync .stat-value').textContent = data.last_sync ? data.last_sync.split('T')[0] : 'never';
+
+    // Progress bar
+    const progressEl = document.getElementById('embed-progress');
+    if (data.pending_embedding > 0 && data.total > 0) {
+      // Record sample for rate calculation
+      _rateSamples.push({ embedded: data.embedded, ts: Date.now() });
+      if (_rateSamples.length > SAMPLE_WINDOW) _rateSamples.shift();
+
+      const pct = Math.round((data.embedded / data.total) * 100);
+      document.getElementById('progress-bar').style.width = pct + '%';
+      document.getElementById('progress-pct').textContent = pct + '%';
+
+      const eta = _computeEta(data.embedded, data.pending_embedding);
+      const etaStr = eta ? ` · ETA ${eta}` : '';
+      document.getElementById('progress-label').textContent =
+        `Embedding in progress — ${data.embedded.toLocaleString()} / ${data.total.toLocaleString()}${etaStr}`;
+
+      progressEl.hidden = false;
+      setTimeout(loadStatus, 5000);
+    } else {
+      _rateSamples.length = 0;
+      progressEl.hidden = data.total === 0;
+      if (data.total > 0) {
+        document.getElementById('progress-bar').style.width = '100%';
+        document.getElementById('progress-pct').textContent = '100%';
+        document.getElementById('progress-label').textContent = `Embedding complete — ${data.embedded.toLocaleString()} mods`;
+        progressEl.hidden = false;
+      }
+    }
+
+    if (data.breakdown.length > 0) {
+      const rows = data.breakdown.map(b =>
+        `<tr><td>${b.loader}</td><td>${b.version}</td><td>${b.count.toLocaleString()}</td></tr>`
+      ).join('');
+      document.getElementById('breakdown-table').innerHTML =
+        `<table><thead><tr><th>Loader</th><th>Version</th><th>Mods</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+  } catch(e) {
+    console.error('Failed to load status:', e);
+  }
+}
+
+// ── Search history ────────────────────────────────────────────────────────────
+const HISTORY_KEY = 'mod_search_history';
+const HISTORY_MAX = 20;
+
+function historyLoad() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+  catch { return []; }
+}
+function historySave(query) {
+  let h = historyLoad().filter(q => q !== query);
+  h.unshift(query);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, HISTORY_MAX)));
+}
+function historyShow(filter) {
+  const dropdown = document.getElementById('history-dropdown');
+  const items = historyLoad().filter(q => !filter || q.toLowerCase().includes(filter.toLowerCase()));
+  if (!items.length) { dropdown.hidden = true; return; }
+  dropdown.innerHTML = items.map(q =>
+    `<div class="history-item" data-query="${escHtml(q)}">${escHtml(q)}</div>`
+  ).join('');
+  dropdown.hidden = false;
+  dropdown.querySelectorAll('.history-item').forEach(el => {
+    el.addEventListener('mousedown', ev => {
+      ev.preventDefault();
+      document.getElementById('query').value = el.dataset.query;
+      dropdown.hidden = true;
+      document.getElementById('search-form').requestSubmit();
+    });
+  });
+}
+
+const _queryInput = document.getElementById('query');
+_queryInput.addEventListener('focus', () => historyShow(_queryInput.value));
+_queryInput.addEventListener('input', () => historyShow(_queryInput.value));
+_queryInput.addEventListener('blur', () => {
+  setTimeout(() => { document.getElementById('history-dropdown').hidden = true; }, 150);
+});
+
+async function doSearch(e) {
+  e.preventDefault();
+  const query = document.getElementById('query').value.trim();
+  const loader = document.getElementById('loader').value;
+  const version = document.getElementById('version').value;
+  const top = document.getElementById('top').value;
+
+  const btn = document.getElementById('search-btn');
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+
+  document.getElementById('results-section').hidden = true;
+  document.getElementById('error-box').hidden = true;
+
+  try {
+    const params = new URLSearchParams({ query, loader, version, top });
+    const data = await (await fetch(`/api/search?${params}`)).json();
+
+    if (data.error) {
+      showError(data.error);
+      return;
+    }
+
+    renderResults(data);
+    historySave(query);
+  } catch(e) {
+    showError('Search failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Search';
+  }
+}
+
+let _lastResponse = null;
+
+function copyJson() {
+  if (!_lastResponse) return;
+  navigator.clipboard.writeText(JSON.stringify(_lastResponse, null, 2)).then(() => {
+    const btn = document.getElementById('copy-json-btn');
+    btn.textContent = '✓ Copied';
+    setTimeout(() => btn.textContent = '⎘ Copy JSON', 1500);
+  });
+}
+
+function renderResults(data) {
+  _lastResponse = data;
+  const list = document.getElementById('results-list');
+  const meta = document.getElementById('results-meta');
+
+  meta.textContent = data.total_searched != null
+    ? `(${data.results.length} of ${data.total_searched.toLocaleString()} mods)`
+    : `(${data.results.length} results · cached)`;
+  list.innerHTML = '';
+
+  if (data.results.length === 0) {
+    list.innerHTML = '<p class="no-results">No results found.</p>';
+  } else {
+    for (const r of data.results) {
+      const card = document.createElement('div');
+      card.className = 'mod-card';
+      card.innerHTML = `
+        <div class="mod-header">
+          <span class="mod-rank">#${r.rank}</span>
+          <a class="mod-title" href="${r.url}" target="_blank" rel="noopener">${escHtml(r.title)}</a>
+          <span class="mod-side badge">${escHtml(r.side)}</span>
+          <span class="mod-score badge">score ${r.score != null ? r.score.toFixed(4) : '—'}</span>
+        </div>
+        <p class="mod-desc">${escHtml(r.description)}</p>
+        <div class="mod-meta">
+          <span>by ${escHtml(r.author)}</span>
+          <span>⬇ ${r.downloads.toLocaleString()}</span>
+        </div>
+      `;
+      list.appendChild(card);
+    }
+  }
+
+  document.getElementById('results-section').hidden = false;
+  document.getElementById('results-section').scrollIntoView({ behavior: 'smooth' });
+}
+
+function showError(msg) {
+  const box = document.getElementById('error-box');
+  box.textContent = msg;
+  box.hidden = false;
+}
+
+function escHtml(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function loadInferenceHealth() {
+  try {
+    const data = await (await fetch('/api/inference/health')).json();
+    for (const [key, status] of Object.entries(data)) {
+      const el = document.getElementById(`health-${key}`);
+      if (!el) continue;
+      const ok = status === 'ok';
+      el.dataset.state = ok ? 'ok' : 'error';
+      el.title = ok ? 'Reachable' : status;
+    }
+  } catch(e) {
+    ['embedder','reranker'].forEach(k => {
+      const el = document.getElementById(`health-${k}`);
+      if (el) { el.dataset.state = 'error'; el.title = 'Request failed'; }
+    });
+  }
+  setTimeout(loadInferenceHealth, 30000);
+}
+
+loadStatus();
+loadInferenceHealth();
+</script>
+</body>
+</html>

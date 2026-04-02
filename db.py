@@ -50,10 +50,68 @@ def init(conn: sqlite3.Connection) -> None:
             value   TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS vector_backups (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            model       TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            data        BLOB NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_projects_loader_version
             ON projects(loader, mc_version);
 
         CREATE INDEX IF NOT EXISTS idx_projects_embedded
             ON projects(embedded_at);
+
+        CREATE TABLE IF NOT EXISTS jobs (
+            id          TEXT PRIMARY KEY,
+            type        TEXT NOT NULL,
+            args        TEXT NOT NULL DEFAULT '{}',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            started_at  TEXT,
+            finished_at TEXT,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS job_logs (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id     TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            line       TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+        CREATE INDEX IF NOT EXISTS idx_job_logs_job ON job_logs(job_id);
+
+        CREATE TABLE IF NOT EXISTS query_cache (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_text  TEXT NOT NULL,
+            loader      TEXT NOT NULL,
+            version     TEXT NOT NULL,
+            query_vec   BLOB NOT NULL,
+            results     TEXT NOT NULL,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_query_cache_loader_version
+            ON query_cache(loader, version);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS projects_fts USING fts5(
+            id UNINDEXED,
+            title,
+            slug,
+            description,
+            body,
+            content='projects',
+            content_rowid='rowid',
+            tokenize='unicode61 remove_diacritics 2'
+        );
     """)
     conn.commit()
+    # Rebuild FTS5 if it has no rows but projects does
+    fts_count = conn.execute("SELECT count(*) FROM projects_fts").fetchone()[0]
+    proj_count = conn.execute("SELECT count(*) FROM projects").fetchone()[0]
+    if fts_count == 0 and proj_count > 0:
+        conn.execute("INSERT INTO projects_fts(projects_fts) VALUES('rebuild')")
+        conn.commit()
