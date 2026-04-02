@@ -66,12 +66,26 @@ def _spawn_runner() -> None:
 
 @app.on_event("startup")
 async def _startup() -> None:
+    global _CATEGORY_LIST
     conn = db.connect()
     db.init(conn)
     conn.close()
     if not _runner_alive():
         print("[web] Runner not detected — spawning workers.runner")
         _spawn_runner()
+    # Load or fetch Modrinth category list
+    cats = _load_categories()
+    if cats:
+        _CATEGORY_LIST = cats
+        print(f"[web] Loaded {len(cats)} mod categories from DB")
+    else:
+        try:
+            cfg = config.load()
+            user_agent = cfg.get("modrinth", {}).get("user_agent", "mod-search/1.0")
+            _CATEGORY_LIST = _fetch_and_store_categories(user_agent)
+            print(f"[web] Fetched {len(_CATEGORY_LIST)} mod categories from Modrinth")
+        except Exception as exc:
+            print(f"[web] Failed to fetch categories: {exc}")
 
 
 async def _watchdog() -> None:
@@ -435,7 +449,149 @@ def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: s
     conn.commit()
     conn.close()
 
-@app.get("/api/cache/{cache_id}")
+
+# ── category list (fetched once from Modrinth, stored in meta) ────────────────
+
+_CATEGORY_LIST: List[str] = []
+
+def _load_categories() -> List[str]:
+    conn = db.connect()
+    row = conn.execute("SELECT value FROM meta WHERE key = 'categories'").fetchone()
+    conn.close()
+    if row:
+        return json.loads(row["value"])
+    return []
+
+def _fetch_and_store_categories(user_agent: str) -> List[str]:
+    with httpx.Client(timeout=15) as client:
+        r = client.get(
+            "https://api.modrinth.com/v2/tag/category",
+            headers={"User-Agent": user_agent},
+        )
+        r.raise_for_status()
+    cats = [c["name"] for c in r.json() if c.get("project_type") == "mod"]
+    conn = db.connect()
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('categories', ?)",
+        (json.dumps(cats),),
+    )
+    conn.commit()
+    conn.close()
+    return cats
+
+
+# ── query expansion ───────────────────────────────────────────────────────────
+
+def _expand_query(query: str, category_list: List[str], chat_url: str) -> dict:
+    """
+    Use Qwen3 chat to expand the query into:
+      - cleaned: a cleaner/expanded version for embedding
+      - keywords: terms for FTS5 + LIKE matching
+      - tags: matching Modrinth categories from the official list
+    Returns dict with those keys (falls back gracefully on failure).
+    """
+    cats_str = ", ".join(category_list)
+    prompt = (
+        f"You are helping improve a Minecraft mod search engine.\n\n"
+        f"User query: \"{query}\"\n\n"
+        f"Official Modrinth mod categories: {cats_str}\n\n"
+        f"Respond with a JSON object (no markdown, no explanation) with exactly these keys:\n"
+        f"  cleaned: a cleaner, more descriptive version of the query for semantic search\n"
+        f"  keywords: array of 3-6 short search terms that would match relevant mod titles/descriptions\n"
+        f"  tags: array of 0-3 category names from the official list above that best match this query\n\n"
+        f"Example output: {{\"cleaned\": \"inventory management and item storage\", "
+        f"\"keywords\": [\"storage\", \"inventory\", \"chest\", \"items\"], \"tags\": [\"storage\", \"utility\"]}}"
+    )
+    try:
+        with httpx.Client(timeout=15) as client:
+            r = client.post(
+                f"{chat_url}/v1/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 200,
+                    "temperature": 0,
+                },
+            )
+            r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"].strip()
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        parsed = json.loads(content)
+        return {
+            "cleaned": str(parsed.get("cleaned", query)),
+            "keywords": [str(k) for k in parsed.get("keywords", [])],
+            "tags": [str(t) for t in parsed.get("tags", []) if t in category_list],
+        }
+    except Exception as exc:
+        print(f"[expand] failed: {exc}")
+        return {"cleaned": query, "keywords": query.lower().split(), "tags": []}
+
+
+# ── FTS5 keyword search ───────────────────────────────────────────────────────
+
+def _fts_search(keywords: List[str], loader: str, version: str, conn) -> List[str]:
+    """BM25 ranked mod IDs matching any keyword via FTS5."""
+    if not keywords:
+        return []
+    # Build FTS5 OR query from keywords
+    fts_query = " OR ".join(f'"{k}"' for k in keywords if k.strip())
+    try:
+        rows = conn.execute(
+            """
+            SELECT p.id FROM projects_fts f
+            JOIN projects p ON p.id = f.id
+            WHERE projects_fts MATCH ?
+              AND p.loader = ? AND p.mc_version = ?
+            ORDER BY rank
+            LIMIT 100
+            """,
+            (fts_query, loader, version),
+        ).fetchall()
+        return [r["id"] for r in rows]
+    except Exception as exc:
+        print(f"[fts5] query failed: {exc}")
+        return []
+
+
+# ── tag search ────────────────────────────────────────────────────────────────
+
+def _tag_search(tags: List[str], loader: str, version: str, conn) -> List[str]:
+    """Mod IDs whose categories JSON contains any of the matched tags."""
+    if not tags:
+        return []
+    results = []
+    seen = set()
+    for tag in tags:
+        rows = conn.execute(
+            "SELECT id FROM projects WHERE loader=? AND mc_version=? AND categories LIKE ?",
+            (loader, version, f"%{tag}%"),
+        ).fetchall()
+        for r in rows:
+            if r["id"] not in seen:
+                results.append(r["id"])
+                seen.add(r["id"])
+    return results
+
+
+# ── Reciprocal Rank Fusion ────────────────────────────────────────────────────
+
+def _rrf(ranked_lists: List[List[str]], k: int = 60) -> List[str]:
+    """Merge multiple ranked ID lists using RRF. Returns IDs sorted by fused score."""
+    scores: Dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, doc_id in enumerate(ranked):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores, key=lambda x: scores[x], reverse=True)
+
+
+@app.get("/api/categories")
+async def get_categories():
+    return {"categories": _CATEGORY_LIST}
+
+
 async def get_cache_entry(cache_id: int):
     conn = db.connect()
     row = conn.execute(
@@ -465,12 +621,25 @@ async def search(
     cfg = config.load()
     embed_url = cfg["inference"]["embedding_url"].rstrip("/")
     rerank_url = cfg["inference"]["reranker_url"].rstrip("/")
-    threshold = float(cfg.get("search", {}).get("cache_threshold", 0.97))
+    chat_url   = cfg["inference"]["chat_url"].rstrip("/")
+    threshold  = float(cfg.get("search", {}).get("cache_threshold", 0.97))
+    use_expand = str(cfg.get("search", {}).get("expansion", "true")).lower() == "true"
 
-    query_vec = _embed(query, embed_url)
+    # ── query expansion ───────────────────────────────────────────────────────
+    if use_expand and _CATEGORY_LIST:
+        expansion = _expand_query(query, _CATEGORY_LIST, chat_url)
+    else:
+        expansion = {"cleaned": query, "keywords": [], "tags": []}
 
-    # ── cache lookup ──────────────────────────────────────────────────────────
-    matched_query, cached = _cache_lookup(query_vec, loader, version, threshold)
+    cleaned   = expansion["cleaned"]
+    keywords  = expansion["keywords"]
+    tags      = expansion["tags"]
+
+    # ── embed cleaned query ───────────────────────────────────────────────────
+    query_vec = _embed(cleaned, embed_url)
+
+    # ── cache lookup (on cleaned query) ──────────────────────────────────────
+    matched_id, cached = _cache_lookup(query_vec, loader, version, threshold)
     if cached is not None:
         ids = [e["id"] for e in cached]
         score_map = {e["id"]: e["score"] for e in cached}
@@ -497,8 +666,11 @@ async def search(
                 "url": f"{MODRINTH_URL}/{r['slug']}",
                 "score": score_map[r["id"]],
             })
-        return {"results": results, "total_searched": None, "cache_hit": True,
-                "query": query, "cache_id": matched_query}
+        return {
+            "results": results, "total_searched": None, "cache_hit": True,
+            "query": query, "cache_id": matched_id,
+            "expansion": expansion,
+        }
 
     # ── full pipeline ─────────────────────────────────────────────────────────
     conn = db.connect()
@@ -509,57 +681,65 @@ async def search(
         JOIN embeddings e ON e.project_id = p.id
         WHERE p.loader = ? AND p.mc_version = ?
     """, (loader, version)).fetchall()
-    conn.close()
 
     if not rows:
+        conn.close()
         return {"results": [], "error": f"No embedded mods found for {loader} {version}"}
 
+    row_index = {r["id"]: i for i, r in enumerate(rows)}
+
+    # [2a] Dense cosine top-N
     vectors = np.stack([_unpack(r["vector"]) for r in rows])
-    scores = _cosine(query_vec, vectors)
+    cos_scores = _cosine(query_vec, vectors)
+    dense_ranked = [rows[i]["id"] for i in np.argsort(cos_scores)[::-1][:pool].tolist()]
 
-    # Top-N by cosine similarity
-    candidate_indices = set(np.argsort(scores)[::-1][:min(pool, len(rows))].tolist())
+    # [2b] FTS5 BM25
+    fts_ranked = _fts_search(keywords, loader, version, conn)
 
-    # Inject text matches — handles exact name searches that score poorly on cosine
-    terms = [t.strip() for t in query.lower().split() if len(t.strip()) > 2]
-    if terms:
-        row_index = {r["id"]: i for i, r in enumerate(rows)}
-        conn = db.connect()
-        for term in terms:
-            like = f"%{term}%"
-            text_hits = conn.execute(
-                "SELECT id FROM projects WHERE loader=? AND mc_version=? AND (LOWER(title) LIKE ? OR LOWER(slug) LIKE ?)",
-                (loader, version, like, like),
-            ).fetchall()
-            for hit in text_hits:
-                idx = row_index.get(hit["id"])
-                if idx is not None:
-                    candidate_indices.add(idx)
-        conn.close()
+    # [2c] Exact LIKE on keywords + original query terms
+    like_terms = list({t.strip().lower() for t in (keywords + query.split()) if len(t.strip()) > 2})
+    like_ids: List[str] = []
+    seen_like: set = set()
+    for term in like_terms:
+        like = f"%{term}%"
+        hits = conn.execute(
+            "SELECT id FROM projects WHERE loader=? AND mc_version=? AND (LOWER(title) LIKE ? OR LOWER(slug) LIKE ?)",
+            (loader, version, like, like),
+        ).fetchall()
+        for h in hits:
+            if h["id"] not in seen_like:
+                like_ids.append(h["id"])
+                seen_like.add(h["id"])
 
-    candidates = [rows[i] for i in candidate_indices]
+    # [2d] Tag filter
+    tag_ranked = _tag_search(tags, loader, version, conn)
+    conn.close()
 
+    # [3] RRF merge
+    merged_ids = _rrf([dense_ranked, fts_ranked, like_ids, tag_ranked])
+
+    # Resolve to row objects (only those with embeddings)
+    candidates = [rows[row_index[mid]] for mid in merged_ids if mid in row_index]
+
+    # ── rerank ────────────────────────────────────────────────────────────────
     docs = [
         f"{r['title']}\n{r['description'] or ''}\n{(r['body'] or '')[:500]}".strip()
         for r in candidates
     ]
-    rerank_scores = _rerank(query, docs, rerank_url)
+    rerank_scores = _rerank(cleaned, docs, rerank_url)
 
-    # If reranker returned all zeros fall back to cosine similarity scores
     if all(s == 0.0 for s in rerank_scores):
-        print("[rerank] All scores zero — falling back to cosine similarity")
-        rerank_scores = [float(scores[rows.index(r)]) if r in rows else 0.0 for r in candidates]
+        print("[rerank] All scores zero — falling back to cosine")
+        cos_map = {rows[i]["id"]: float(cos_scores[i]) for i in range(len(rows))}
+        rerank_scores = [cos_map.get(r["id"], 0.0) for r in candidates]
 
     ranked = sorted(zip(candidates, rerank_scores), key=lambda x: x[1], reverse=True)
     results = [
         {
             "rank": i + 1,
-            "id": r["id"],
-            "slug": r["slug"],
-            "title": r["title"],
+            "id": r["id"], "slug": r["slug"], "title": r["title"],
             "description": r["description"] or "",
-            "author": r["author"] or "",
-            "downloads": r["downloads"],
+            "author": r["author"] or "", "downloads": r["downloads"],
             "side": _fmt_side(r["client_side"], r["server_side"]),
             "url": f"{MODRINTH_URL}/{r['slug']}",
             "score": round(score, 4),
@@ -567,6 +747,12 @@ async def search(
         for i, (r, score) in enumerate(ranked)
     ]
 
-    _cache_store(query, query_vec, loader, version, results)
+    _cache_store(cleaned, query_vec, loader, version, results)
 
-    return {"results": results[:top], "total_searched": len(rows), "cache_hit": False, "query": query}
+    return {
+        "results": results[:top],
+        "total_searched": len(rows),
+        "cache_hit": False,
+        "query": query,
+        "expansion": expansion,
+    }

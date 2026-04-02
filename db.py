@@ -96,5 +96,22 @@ def init(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_query_cache_loader_version
             ON query_cache(loader, version);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS projects_fts USING fts5(
+            id UNINDEXED,
+            title,
+            slug,
+            description,
+            body,
+            content='projects',
+            content_rowid='rowid',
+            tokenize='unicode61 remove_diacritics 2'
+        );
     """)
     conn.commit()
+    # Rebuild FTS5 if it has no rows but projects does
+    fts_count = conn.execute("SELECT count(*) FROM projects_fts").fetchone()[0]
+    proj_count = conn.execute("SELECT count(*) FROM projects").fetchone()[0]
+    if fts_count == 0 and proj_count > 0:
+        conn.execute("INSERT INTO projects_fts(projects_fts) VALUES('rebuild')")
+        conn.commit()
