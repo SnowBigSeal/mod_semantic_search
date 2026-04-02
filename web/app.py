@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import pickle
@@ -629,7 +630,6 @@ async def search(
     # ── query expansion (run in thread so it doesn't block the event loop) ───
     import time
     t0 = time.time()
-
     if use_expand and _CATEGORY_LIST:
         loop = asyncio.get_event_loop()
         expansion = await loop.run_in_executor(
