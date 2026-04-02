@@ -202,9 +202,23 @@ async def status():
     }
 
 
-# ── API: jobs ─────────────────────────────────────────────────────────────────
+@app.get("/api/inference/health")
+async def inference_health():
+    cfg = config.load()
+    servers = {
+        "embedder": cfg["inference"]["embedding_url"].rstrip("/"),
+        "reranker": cfg["inference"]["reranker_url"].rstrip("/"),
+    }
+    result = {}
+    for name, base_url in servers.items():
+        try:
+            with httpx.Client(timeout=3) as client:
+                r = client.get(f"{base_url}/health")
+            result[name] = "ok" if r.status_code == 200 else f"http_{r.status_code}"
+        except Exception as exc:
+            result[name] = "unreachable"
+    return result
 
-# ── API: jobs ─────────────────────────────────────────────────────────────────
 
 class JobRequest(BaseModel):
     action: str

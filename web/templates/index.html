@@ -86,6 +86,10 @@
       <div class="stat-card" id="stat-pending"><span class="stat-label">Pending</span><span class="stat-value">—</span></div>
       <div class="stat-card" id="stat-sync"><span class="stat-label">Last sync</span><span class="stat-value">—</span></div>
     </div>
+    <div id="inference-health" class="inference-health">
+      <span class="health-pill" id="health-embedder" data-state="checking">⬤ Embedder</span>
+      <span class="health-pill" id="health-reranker" data-state="checking">⬤ Reranker</span>
+    </div>
     <div id="embed-progress" hidden>
       <div class="progress-header">
         <span id="progress-label">Embedding in progress…</span>
@@ -250,7 +254,27 @@ function escHtml(str) {
   return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+async function loadInferenceHealth() {
+  try {
+    const data = await (await fetch('/api/inference/health')).json();
+    for (const [key, status] of Object.entries(data)) {
+      const el = document.getElementById(`health-${key}`);
+      if (!el) continue;
+      const ok = status === 'ok';
+      el.dataset.state = ok ? 'ok' : 'error';
+      el.title = ok ? 'Reachable' : status;
+    }
+  } catch(e) {
+    ['embedder','reranker'].forEach(k => {
+      const el = document.getElementById(`health-${k}`);
+      if (el) { el.dataset.state = 'error'; el.title = 'Request failed'; }
+    });
+  }
+  setTimeout(loadInferenceHealth, 30000);
+}
+
 loadStatus();
+loadInferenceHealth();
 </script>
 </body>
 </html>

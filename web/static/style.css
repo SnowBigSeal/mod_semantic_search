@@ -301,3 +301,16 @@ button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
   padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border);
 }
 #breakdown-table th { color: var(--muted); font-weight: normal; font-size: 0.75rem; text-transform: uppercase; }
+
+/* ── Inference health pills ──────────────────────────────────────────────── */
+.inference-health {
+  display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap;
+}
+.health-pill {
+  font-size: 0.78rem; padding: 0.3rem 0.75rem;
+  border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); cursor: default; user-select: none;
+}
+.health-pill[data-state="checking"] { color: var(--muted); }
+.health-pill[data-state="ok"]    { color: #4ade80; border-color: #4ade80; }
+.health-pill[data-state="error"] { color: #f87171; border-color: #f87171; }
