@@ -111,9 +111,19 @@ def _rerank(query: str, docs: list, base_url: str) -> list:
     with httpx.Client(timeout=120) as client:
         r = client.post(f"{base_url}{RERANK_ENDPOINT}", json={"query": query, "documents": docs})
         r.raise_for_status()
+    body = r.json()
+    # llama.cpp uses "results"; some builds use "data"
+    items = body.get("results") or body.get("data") or []
+    if not items:
+        print(f"[rerank] Unexpected response format: {list(body.keys())}")
+        return [0.0] * len(docs)
     scores = [0.0] * len(docs)
-    for item in r.json()["results"]:
-        scores[item["index"]] = item["relevance_score"]
+    for item in items:
+        idx = item.get("index", 0)
+        # llama.cpp field is "relevance_score"; some builds use "score"
+        score = item.get("relevance_score") or item.get("score") or 0.0
+        if idx < len(scores):
+            scores[idx] = float(score)
     return scores
 
 def _fmt_side(client_side: str, server_side: str) -> str:
@@ -462,6 +472,12 @@ async def search(
 
     docs = [f"{r['title']}\n{r['description'] or ''}" for r in candidates]
     rerank_scores = _rerank(query, docs, rerank_url)
+
+    # If reranker returned all zeros fall back to cosine similarity scores
+    cosine_candidate_scores = [float(scores[i]) for i in candidate_indices]
+    if all(s == 0.0 for s in rerank_scores):
+        print("[rerank] All scores zero — falling back to cosine similarity")
+        rerank_scores = cosine_candidate_scores
 
     ranked = sorted(zip(candidates, rerank_scores), key=lambda x: x[1], reverse=True)
     results = [
