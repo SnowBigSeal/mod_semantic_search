@@ -83,5 +83,18 @@ def init(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
         CREATE INDEX IF NOT EXISTS idx_job_logs_job ON job_logs(job_id);
+
+        CREATE TABLE IF NOT EXISTS query_cache (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_text  TEXT NOT NULL,
+            loader      TEXT NOT NULL,
+            version     TEXT NOT NULL,
+            query_vec   BLOB NOT NULL,
+            results     TEXT NOT NULL,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_query_cache_loader_version
+            ON query_cache(loader, version);
     """)
     conn.commit()

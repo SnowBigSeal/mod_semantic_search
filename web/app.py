@@ -364,6 +364,35 @@ async def restore_backup(backup_id: int):
 
 # ── API: search ───────────────────────────────────────────────────────────────
 
+def _pack(vec: np.ndarray) -> bytes:
+    return vec.astype(np.float32).tobytes()
+
+def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: float):
+    """Return cached results JSON string if a similar query exists, else None."""
+    conn = db.connect()
+    rows = conn.execute(
+        "SELECT query_vec, results FROM query_cache WHERE loader = ? AND version = ?",
+        (loader, version),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    vecs = np.stack([_unpack(r["query_vec"]) for r in rows])
+    scores = _cosine(query_vec, vecs)
+    best = int(np.argmax(scores))
+    if scores[best] >= threshold:
+        return rows[best]["results"]
+    return None
+
+def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: str, results: list) -> None:
+    conn = db.connect()
+    conn.execute(
+        "INSERT INTO query_cache (query_text, loader, version, query_vec, results) VALUES (?, ?, ?, ?, ?)",
+        (query_text, loader, version, _pack(query_vec), json.dumps(results)),
+    )
+    conn.commit()
+    conn.close()
+
 @app.get("/api/search")
 async def search(
     query: str = Query(..., min_length=1),
@@ -375,7 +404,17 @@ async def search(
     cfg = config.load()
     embed_url = cfg["inference"]["embedding_url"].rstrip("/")
     rerank_url = cfg["inference"]["reranker_url"].rstrip("/")
+    threshold = float(cfg.get("search", {}).get("cache_threshold", 0.97))
 
+    query_vec = _embed(query, embed_url)
+
+    # ── cache lookup ──────────────────────────────────────────────────────────
+    cached = _cache_lookup(query_vec, loader, version, threshold)
+    if cached is not None:
+        all_results = json.loads(cached)
+        return {"results": all_results[:top], "total_searched": None, "cache_hit": True}
+
+    # ── full pipeline ─────────────────────────────────────────────────────────
     conn = db.connect()
     rows = conn.execute("""
         SELECT p.id, p.slug, p.title, p.description, p.author,
@@ -390,7 +429,6 @@ async def search(
         return {"results": [], "error": f"No embedded mods found for {loader} {version}"}
 
     vectors = np.stack([_unpack(r["vector"]) for r in rows])
-    query_vec = _embed(query, embed_url)
     scores = _cosine(query_vec, vectors)
 
     candidate_indices = np.argsort(scores)[::-1][:min(pool, len(rows))]
@@ -399,23 +437,23 @@ async def search(
     docs = [f"{r['title']}\n{r['description'] or ''}" for r in candidates]
     rerank_scores = _rerank(query, docs, rerank_url)
 
-    ranked = sorted(zip(candidates, rerank_scores), key=lambda x: x[1], reverse=True)[:top]
+    ranked = sorted(zip(candidates, rerank_scores), key=lambda x: x[1], reverse=True)
+    results = [
+        {
+            "rank": i + 1,
+            "id": r["id"],
+            "slug": r["slug"],
+            "title": r["title"],
+            "description": r["description"] or "",
+            "author": r["author"] or "",
+            "downloads": r["downloads"],
+            "side": _fmt_side(r["client_side"], r["server_side"]),
+            "url": f"{MODRINTH_URL}/{r['slug']}",
+            "score": round(score, 4),
+        }
+        for i, (r, score) in enumerate(ranked)
+    ]
 
-    return {
-        "results": [
-            {
-                "rank": i + 1,
-                "id": r["id"],
-                "slug": r["slug"],
-                "title": r["title"],
-                "description": r["description"] or "",
-                "author": r["author"] or "",
-                "downloads": r["downloads"],
-                "side": _fmt_side(r["client_side"], r["server_side"]),
-                "url": f"{MODRINTH_URL}/{r['slug']}",
-                "score": round(score, 4),
-            }
-            for i, (r, score) in enumerate(ranked)
-        ],
-        "total_searched": len(rows),
-    }
+    _cache_store(query, query_vec, loader, version, results)
+
+    return {"results": results[:top], "total_searched": len(rows), "cache_hit": False}
