@@ -199,6 +199,14 @@ button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
   max-width: 600px;
 }
 
+.copy-json-btn {
+  font-size: 0.75rem; padding: 0.2rem 0.6rem;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--muted);
+  cursor: pointer; vertical-align: middle; margin-left: 0.5rem;
+}
+.copy-json-btn:hover { border-color: var(--accent); color: var(--accent-hi); }
+
 /* ── Settings page ───────────────────────────────────────── */
 .card-grid {
   display: grid;

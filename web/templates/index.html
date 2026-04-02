@@ -71,7 +71,7 @@
 
   <!-- Results -->
   <section id="results-section" hidden>
-    <h2>Results <span id="results-meta"></span></h2>
+    <h2>Results <span id="results-meta"></span> <button id="copy-json-btn" class="copy-json-btn" onclick="copyJson()" title="Copy raw JSON">⎘ Copy JSON</button></h2>
     <div id="results-list"></div>
   </section>
 
@@ -250,7 +250,19 @@ async function doSearch(e) {
   }
 }
 
+let _lastResponse = null;
+
+function copyJson() {
+  if (!_lastResponse) return;
+  navigator.clipboard.writeText(JSON.stringify(_lastResponse, null, 2)).then(() => {
+    const btn = document.getElementById('copy-json-btn');
+    btn.textContent = '✓ Copied';
+    setTimeout(() => btn.textContent = '⎘ Copy JSON', 1500);
+  });
+}
+
 function renderResults(data) {
+  _lastResponse = data;
   const list = document.getElementById('results-list');
   const meta = document.getElementById('results-meta');
 
