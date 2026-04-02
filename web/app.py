@@ -618,7 +618,7 @@ async def search(
     loader: str = Query(...),
     version: str = Query(...),
     top: int = Query(default=10, ge=1, le=50),
-    pool: int = Query(default=50, ge=10, le=200),
+    pool: int = Query(default=25, ge=10, le=200),
 ):
     cfg = config.load()
     embed_url = cfg["inference"]["embedding_url"].rstrip("/")
@@ -737,7 +737,7 @@ async def search(
 
     # ── rerank ────────────────────────────────────────────────────────────────
     docs = [
-        f"{r['title']}\n{r['description'] or ''}\n{(r['body'] or '')[:500]}".strip()
+        f"{r['title']}\n{r['description'] or ''}".strip()
         for r in candidates
     ]
     rerank_scores = _rerank(cleaned, docs, rerank_url)
