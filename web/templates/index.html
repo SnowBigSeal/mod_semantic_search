@@ -28,7 +28,7 @@
   <!-- Search panel -->
   <section id="search-panel">
     <form id="search-form" onsubmit="doSearch(event)">
-      <div class="form-row">
+      <div class="form-row" style="position:relative">
         <input
           type="text"
           id="query"
@@ -38,6 +38,7 @@
           required
         >
         <button type="submit" id="search-btn">Search</button>
+        <div id="history-dropdown" class="history-dropdown" hidden></div>
       </div>
       <div class="form-row filters">
         <label>
@@ -178,6 +179,44 @@ async function loadStatus() {
   }
 }
 
+// ── Search history ────────────────────────────────────────────────────────────
+const HISTORY_KEY = 'mod_search_history';
+const HISTORY_MAX = 20;
+
+function historyLoad() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+  catch { return []; }
+}
+function historySave(query) {
+  let h = historyLoad().filter(q => q !== query);
+  h.unshift(query);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, HISTORY_MAX)));
+}
+function historyShow(filter) {
+  const dropdown = document.getElementById('history-dropdown');
+  const items = historyLoad().filter(q => !filter || q.toLowerCase().includes(filter.toLowerCase()));
+  if (!items.length) { dropdown.hidden = true; return; }
+  dropdown.innerHTML = items.map(q =>
+    `<div class="history-item" data-query="${escHtml(q)}">${escHtml(q)}</div>`
+  ).join('');
+  dropdown.hidden = false;
+  dropdown.querySelectorAll('.history-item').forEach(el => {
+    el.addEventListener('mousedown', ev => {
+      ev.preventDefault();
+      document.getElementById('query').value = el.dataset.query;
+      dropdown.hidden = true;
+      document.getElementById('search-form').requestSubmit();
+    });
+  });
+}
+
+const _queryInput = document.getElementById('query');
+_queryInput.addEventListener('focus', () => historyShow(_queryInput.value));
+_queryInput.addEventListener('input', () => historyShow(_queryInput.value));
+_queryInput.addEventListener('blur', () => {
+  setTimeout(() => { document.getElementById('history-dropdown').hidden = true; }, 150);
+});
+
 async function doSearch(e) {
   e.preventDefault();
   const query = document.getElementById('query').value.trim();
@@ -202,6 +241,7 @@ async function doSearch(e) {
     }
 
     renderResults(data);
+    historySave(query);
   } catch(e) {
     showError('Search failed: ' + e.message);
   } finally {
