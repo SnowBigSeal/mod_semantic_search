@@ -214,7 +214,9 @@ function renderResults(data) {
   const list = document.getElementById('results-list');
   const meta = document.getElementById('results-meta');
 
-  meta.textContent = `(${data.results.length} of ${data.total_searched.toLocaleString()} mods)`;
+  meta.textContent = data.total_searched != null
+    ? `(${data.results.length} of ${data.total_searched.toLocaleString()} mods)`
+    : `(${data.results.length} results · cached)`;
   list.innerHTML = '';
 
   if (data.results.length === 0) {
@@ -228,7 +230,7 @@ function renderResults(data) {
           <span class="mod-rank">#${r.rank}</span>
           <a class="mod-title" href="${r.url}" target="_blank" rel="noopener">${escHtml(r.title)}</a>
           <span class="mod-side badge">${escHtml(r.side)}</span>
-          <span class="mod-score badge">score ${r.score}</span>
+          <span class="mod-score badge">score ${r.score != null ? r.score.toFixed(4) : '—'}</span>
         </div>
         <p class="mod-desc">${escHtml(r.description)}</p>
         <div class="mod-meta">
