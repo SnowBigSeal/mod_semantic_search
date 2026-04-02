@@ -497,7 +497,26 @@ async def search(
     vectors = np.stack([_unpack(r["vector"]) for r in rows])
     scores = _cosine(query_vec, vectors)
 
-    candidate_indices = np.argsort(scores)[::-1][:min(pool, len(rows))]
+    # Top-N by cosine similarity
+    candidate_indices = set(np.argsort(scores)[::-1][:min(pool, len(rows))].tolist())
+
+    # Inject text matches — handles exact name searches that score poorly on cosine
+    terms = [t.strip() for t in query.lower().split() if len(t.strip()) > 2]
+    if terms:
+        row_index = {r["id"]: i for i, r in enumerate(rows)}
+        conn = db.connect()
+        for term in terms:
+            like = f"%{term}%"
+            text_hits = conn.execute(
+                "SELECT id FROM projects WHERE loader=? AND mc_version=? AND (LOWER(title) LIKE ? OR LOWER(slug) LIKE ?)",
+                (loader, version, like, like),
+            ).fetchall()
+            for hit in text_hits:
+                idx = row_index.get(hit["id"])
+                if idx is not None:
+                    candidate_indices.add(idx)
+        conn.close()
+
     candidates = [rows[i] for i in candidate_indices]
 
     docs = [
@@ -509,7 +528,7 @@ async def search(
     # If reranker returned all zeros fall back to cosine similarity scores
     if all(s == 0.0 for s in rerank_scores):
         print("[rerank] All scores zero — falling back to cosine similarity")
-        rerank_scores = cosine_candidate_scores
+        rerank_scores = [float(scores[rows.index(r)]) if r in rows else 0.0 for r in candidates]
 
     ranked = sorted(zip(candidates, rerank_scores), key=lambda x: x[1], reverse=True)
     results = [
