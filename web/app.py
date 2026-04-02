@@ -617,7 +617,7 @@ async def search(
     query: str = Query(..., min_length=1),
     loader: str = Query(...),
     version: str = Query(...),
-    top: int = Query(default=10, ge=1, le=50),
+    top: int = Query(default=10, ge=1, le=100),
     pool: int = Query(default=25, ge=10, le=200),
 ):
     cfg = config.load()
@@ -626,6 +626,7 @@ async def search(
     chat_url   = cfg["inference"]["chat_url"].rstrip("/")
     threshold  = float(cfg.get("search", {}).get("cache_threshold", 0.97))
     use_expand = str(cfg.get("search", {}).get("expansion", "true")).lower() == "true"
+    pool = max(pool, top)  # pool must always be at least as large as the requested results
 
     # ── query expansion (run in thread so it doesn't block the event loop) ───
     import time
