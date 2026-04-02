@@ -411,7 +411,7 @@ def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: f
     """Return (cache_id, [{id, score}]) if a similar query exists, else (None, None)."""
     conn = db.connect()
     rows = conn.execute(
-        "SELECT rowid, query_vec, results FROM query_cache WHERE loader = ? AND version = ?",
+        "SELECT rowid AS id, query_vec, results FROM query_cache WHERE loader = ? AND version = ?",
         (loader, version),
     ).fetchall()
     conn.close()
@@ -421,7 +421,7 @@ def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: f
     sims = _cosine(query_vec, vecs)
     best = int(np.argmax(sims))
     if sims[best] >= threshold:
-        return rows[best]["rowid"], json.loads(rows[best]["results"])
+        return rows[best]["id"], json.loads(rows[best]["results"])
     return None, None
 
 def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: str, ranked: list) -> None:
@@ -439,14 +439,14 @@ def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: s
 async def get_cache_entry(cache_id: int):
     conn = db.connect()
     row = conn.execute(
-        "SELECT rowid, query_text, loader, version, created_at, results FROM query_cache WHERE rowid = ?",
+        "SELECT rowid AS id, query_text, loader, version, created_at, results FROM query_cache WHERE rowid = ?",
         (cache_id,),
     ).fetchone()
     conn.close()
     if not row:
         raise HTTPException(404, "Cache entry not found")
     return {
-        "id": row["rowid"],
+        "id": row["id"],
         "query_text": row["query_text"],
         "loader": row["loader"],
         "version": row["version"],
