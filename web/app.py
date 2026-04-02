@@ -627,7 +627,9 @@ async def search(
     use_expand = str(cfg.get("search", {}).get("expansion", "true")).lower() == "true"
 
     # ── query expansion (run in thread so it doesn't block the event loop) ───
-    import asyncio
+    import time
+    t0 = time.time()
+
     if use_expand and _CATEGORY_LIST:
         loop = asyncio.get_event_loop()
         expansion = await loop.run_in_executor(
@@ -636,12 +638,17 @@ async def search(
     else:
         expansion = {"cleaned": query, "keywords": [], "tags": []}
 
+    t_expand = time.time()
+    print(f"[search] expand={t_expand-t0:.2f}s  cleaned='{expansion['cleaned']}'  keywords={expansion['keywords']}  tags={expansion['tags']}")
+
     cleaned   = expansion["cleaned"]
     keywords  = expansion["keywords"]
     tags      = expansion["tags"]
 
     # ── embed cleaned query ───────────────────────────────────────────────────
     query_vec = _embed(cleaned, embed_url)
+    t_embed = time.time()
+    print(f"[search] embed={t_embed-t_expand:.2f}s")
 
     # ── cache lookup (on cleaned query) ──────────────────────────────────────
     matched_id, cached = _cache_lookup(query_vec, loader, version, threshold)
@@ -722,6 +729,8 @@ async def search(
 
     # [3] RRF merge
     merged_ids = _rrf([dense_ranked, fts_ranked, like_ids, tag_ranked])
+    t_retrieve = time.time()
+    print(f"[search] retrieve={t_retrieve-t_embed:.2f}s  dense={len(dense_ranked)} fts5={len(fts_ranked)} like={len(like_ids)} tags={len(tag_ranked)} merged={len(merged_ids)}")
 
     # Resolve to row objects (only those with embeddings)
     candidates = [rows[row_index[mid]] for mid in merged_ids if mid in row_index]
@@ -732,6 +741,8 @@ async def search(
         for r in candidates
     ]
     rerank_scores = _rerank(cleaned, docs, rerank_url)
+    t_rerank = time.time()
+    print(f"[search] rerank={t_rerank-t_retrieve:.2f}s  candidates={len(candidates)}")
 
     if all(s == 0.0 for s in rerank_scores):
         print("[rerank] All scores zero — falling back to cosine")
@@ -754,10 +765,30 @@ async def search(
 
     _cache_store(cleaned, query_vec, loader, version, results)
 
+    t_total = time.time()
+    print(f"[search] total={t_total-t0:.2f}s  results={len(results[:top])}")
+    debug = {
+        "timings": {
+            "expand_s": round(t_expand - t0, 2),
+            "embed_s": round(t_embed - t_expand, 2),
+            "retrieve_s": round(t_retrieve - t_embed, 2),
+            "rerank_s": round(t_rerank - t_retrieve, 2),
+            "total_s": round(t_total - t0, 2),
+        },
+        "candidates": {
+            "dense": len(dense_ranked),
+            "fts5": len(fts_ranked),
+            "like": len(like_ids),
+            "tags": len(tag_ranked),
+            "merged": len(merged_ids),
+            "reranked": len(candidates),
+        },
+    }
     return {
         "results": results[:top],
         "total_searched": len(rows),
         "cache_hit": False,
         "query": query,
         "expansion": expansion,
+        "debug": debug,
     }
