@@ -560,16 +560,16 @@ def _fts_search(keywords: List[str], loader: str, version: str, conn) -> List[st
 
 # ── tag search ────────────────────────────────────────────────────────────────
 
-def _tag_search(tags: List[str], loader: str, version: str, conn) -> List[str]:
-    """Mod IDs whose categories JSON contains any of the matched tags."""
+def _tag_search(tags: List[str], loader: str, version: str, conn, limit: int = 200) -> List[str]:
+    """Mod IDs whose categories JSON contains any of the matched tags (capped to avoid broad tags swamping RRF)."""
     if not tags:
         return []
     results = []
     seen = set()
     for tag in tags:
         rows = conn.execute(
-            "SELECT id FROM projects WHERE loader=? AND mc_version=? AND categories LIKE ?",
-            (loader, version, f"%{tag}%"),
+            "SELECT id FROM projects WHERE loader=? AND mc_version=? AND categories LIKE ? LIMIT ?",
+            (loader, version, f"%{tag}%", limit),
         ).fetchall()
         for r in rows:
             if r["id"] not in seen:
@@ -727,8 +727,8 @@ async def search(
     tag_ranked = _tag_search(tags, loader, version, conn)
     conn.close()
 
-    # [3] RRF merge
-    merged_ids = _rrf([dense_ranked, fts_ranked, like_ids, tag_ranked])
+    # [3] RRF merge — cap total candidates before reranking
+    merged_ids = _rrf([dense_ranked, fts_ranked, like_ids, tag_ranked])[:pool]
     t_retrieve = time.time()
     print(f"[search] retrieve={t_retrieve-t_embed:.2f}s  dense={len(dense_ranked)} fts5={len(fts_ranked)} like={len(like_ids)} tags={len(tag_ranked)} merged={len(merged_ids)}")
 
