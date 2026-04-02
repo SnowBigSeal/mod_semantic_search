@@ -368,7 +368,7 @@ def _pack(vec: np.ndarray) -> bytes:
     return vec.astype(np.float32).tobytes()
 
 def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: float):
-    """Return cached results JSON string if a similar query exists, else None."""
+    """Return ordered list of {id, score} if a similar query exists, else None."""
     conn = db.connect()
     rows = conn.execute(
         "SELECT query_vec, results FROM query_cache WHERE loader = ? AND version = ?",
@@ -381,14 +381,16 @@ def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: f
     scores = _cosine(query_vec, vecs)
     best = int(np.argmax(scores))
     if scores[best] >= threshold:
-        return rows[best]["results"]
+        return json.loads(rows[best]["results"])  # [{id, score}, ...]
     return None
 
-def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: str, results: list) -> None:
+def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: str, ranked: list) -> None:
+    """Store only id + score per result — project data is fetched fresh on hit."""
+    slim = [{"id": r["id"], "score": r["score"]} for r in ranked]
     conn = db.connect()
     conn.execute(
         "INSERT INTO query_cache (query_text, loader, version, query_vec, results) VALUES (?, ?, ?, ?, ?)",
-        (query_text, loader, version, _pack(query_vec), json.dumps(results)),
+        (query_text, loader, version, _pack(query_vec), json.dumps(slim)),
     )
     conn.commit()
     conn.close()
@@ -411,8 +413,32 @@ async def search(
     # ── cache lookup ──────────────────────────────────────────────────────────
     cached = _cache_lookup(query_vec, loader, version, threshold)
     if cached is not None:
-        all_results = json.loads(cached)
-        return {"results": all_results[:top], "total_searched": None, "cache_hit": True}
+        ids = [e["id"] for e in cached]
+        score_map = {e["id"]: e["score"] for e in cached}
+        placeholders = ",".join("?" * len(ids))
+        conn = db.connect()
+        proj_rows = conn.execute(
+            f"SELECT id, slug, title, description, author, downloads, client_side, server_side "
+            f"FROM projects WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        conn.close()
+        proj_map = {r["id"]: r for r in proj_rows}
+        results = []
+        for i, entry in enumerate(cached[:top]):
+            r = proj_map.get(entry["id"])
+            if not r:
+                continue
+            results.append({
+                "rank": i + 1,
+                "id": r["id"], "slug": r["slug"], "title": r["title"],
+                "description": r["description"] or "",
+                "author": r["author"] or "", "downloads": r["downloads"],
+                "side": _fmt_side(r["client_side"], r["server_side"]),
+                "url": f"{MODRINTH_URL}/{r['slug']}",
+                "score": score_map[r["id"]],
+            })
+        return {"results": results, "total_searched": None, "cache_hit": True}
 
     # ── full pipeline ─────────────────────────────────────────────────────────
     conn = db.connect()
