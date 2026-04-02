@@ -120,7 +120,7 @@ def _rerank(query: str, docs: list, base_url: str) -> list:
         "Judge whether the Document meets the requirements based on the "
         "Query and the Instruct, and give a judgment result of yes or no."
     )
-    _INSTR = "Retrieve relevant documents for the query."
+    _INSTR = "Given a Minecraft mod search query, determine if this mod matches what the player is looking for."
     _URL = f"{base_url}/v1/completions"
 
     def _score_one(idx: int, doc: str):
@@ -483,7 +483,7 @@ async def search(
     # ── full pipeline ─────────────────────────────────────────────────────────
     conn = db.connect()
     rows = conn.execute("""
-        SELECT p.id, p.slug, p.title, p.description, p.author,
+        SELECT p.id, p.slug, p.title, p.description, p.body, p.author,
                p.downloads, p.client_side, p.server_side, e.vector
         FROM projects p
         JOIN embeddings e ON e.project_id = p.id
@@ -500,7 +500,10 @@ async def search(
     candidate_indices = np.argsort(scores)[::-1][:min(pool, len(rows))]
     candidates = [rows[i] for i in candidate_indices]
 
-    docs = [f"{r['title']}\n{r['description'] or ''}" for r in candidates]
+    docs = [
+        f"{r['title']}\n{r['description'] or ''}\n{(r['body'] or '')[:500]}".strip()
+        for r in candidates
+    ]
     rerank_scores = _rerank(query, docs, rerank_url)
 
     # If reranker returned all zeros fall back to cosine similarity scores
