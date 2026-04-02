@@ -408,10 +408,10 @@ def _pack(vec: np.ndarray) -> bytes:
     return vec.astype(np.float32).tobytes()
 
 def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: float):
-    """Return (matched_query_text, [{id, score}]) if a similar query exists, else (None, None)."""
+    """Return (cache_id, [{id, score}]) if a similar query exists, else (None, None)."""
     conn = db.connect()
     rows = conn.execute(
-        "SELECT query_text, query_vec, results FROM query_cache WHERE loader = ? AND version = ?",
+        "SELECT rowid, query_vec, results FROM query_cache WHERE loader = ? AND version = ?",
         (loader, version),
     ).fetchall()
     conn.close()
@@ -421,7 +421,7 @@ def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: f
     sims = _cosine(query_vec, vecs)
     best = int(np.argmax(sims))
     if sims[best] >= threshold:
-        return rows[best]["query_text"], json.loads(rows[best]["results"])
+        return rows[best]["rowid"], json.loads(rows[best]["results"])
     return None, None
 
 def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: str, ranked: list) -> None:
@@ -434,6 +434,25 @@ def _cache_store(query_text: str, query_vec: np.ndarray, loader: str, version: s
     )
     conn.commit()
     conn.close()
+
+@app.get("/api/cache/{cache_id}")
+async def get_cache_entry(cache_id: int):
+    conn = db.connect()
+    row = conn.execute(
+        "SELECT rowid, query_text, loader, version, created_at, results FROM query_cache WHERE rowid = ?",
+        (cache_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Cache entry not found")
+    return {
+        "id": row["rowid"],
+        "query_text": row["query_text"],
+        "loader": row["loader"],
+        "version": row["version"],
+        "created_at": row["created_at"],
+        "results": json.loads(row["results"]),
+    }
 
 @app.get("/api/search")
 async def search(
@@ -479,7 +498,7 @@ async def search(
                 "score": score_map[r["id"]],
             })
         return {"results": results, "total_searched": None, "cache_hit": True,
-                "query": query, "matched_cache_query": matched_query}
+                "query": query, "cache_id": matched_query}
 
     # ── full pipeline ─────────────────────────────────────────────────────────
     conn = db.connect()
