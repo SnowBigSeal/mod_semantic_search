@@ -489,6 +489,7 @@ def _expand_query(query: str, category_list: List[str], chat_url: str) -> dict:
       - keywords: terms for FTS5 + LIKE matching
       - tags: matching Modrinth categories from the official list
     Returns dict with those keys (falls back gracefully on failure).
+    Hard timeout: 5s — if the chat model is busy, fall back immediately.
     """
     cats_str = ", ".join(category_list)
     prompt = (
@@ -503,7 +504,7 @@ def _expand_query(query: str, category_list: List[str], chat_url: str) -> dict:
         f"\"keywords\": [\"storage\", \"inventory\", \"chest\", \"items\"], \"tags\": [\"storage\", \"utility\"]}}"
     )
     try:
-        with httpx.Client(timeout=15) as client:
+        with httpx.Client(timeout=5) as client:
             r = client.post(
                 f"{chat_url}/v1/chat/completions",
                 json={
@@ -526,7 +527,7 @@ def _expand_query(query: str, category_list: List[str], chat_url: str) -> dict:
             "tags": [str(t) for t in parsed.get("tags", []) if t in category_list],
         }
     except Exception as exc:
-        print(f"[expand] failed: {exc}")
+        print(f"[expand] failed ({type(exc).__name__}): {exc}")
         return {"cleaned": query, "keywords": query.lower().split(), "tags": []}
 
 
@@ -625,9 +626,13 @@ async def search(
     threshold  = float(cfg.get("search", {}).get("cache_threshold", 0.97))
     use_expand = str(cfg.get("search", {}).get("expansion", "true")).lower() == "true"
 
-    # ── query expansion ───────────────────────────────────────────────────────
+    # ── query expansion (run in thread so it doesn't block the event loop) ───
+    import asyncio
     if use_expand and _CATEGORY_LIST:
-        expansion = _expand_query(query, _CATEGORY_LIST, chat_url)
+        loop = asyncio.get_event_loop()
+        expansion = await loop.run_in_executor(
+            None, _expand_query, query, _CATEGORY_LIST, chat_url
+        )
     else:
         expansion = {"cleaned": query, "keywords": [], "tags": []}
 
