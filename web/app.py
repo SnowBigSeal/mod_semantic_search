@@ -118,7 +118,8 @@ def _cosine(query: np.ndarray, matrix: np.ndarray) -> np.ndarray:
 def _embed(text: str, base_url: str) -> np.ndarray:
     with httpx.Client(timeout=60) as client:
         r = client.post(f"{base_url}{EMBED_ENDPOINT}", json={"input": [text]})
-        r.raise_for_status()
+        if not r.is_success:
+            raise HTTPException(502, f"Embedding server error {r.status_code}: {r.text[:200]}")
     return np.array(r.json()["data"][0]["embedding"], dtype=np.float32)
 
 def _rerank(query: str, docs: list, base_url: str) -> list:
@@ -538,8 +539,13 @@ def _fts_search(keywords: List[str], loader: str, version: str, conn) -> List[st
     """BM25 ranked mod IDs matching any keyword via FTS5."""
     if not keywords:
         return []
-    # Build FTS5 OR query from keywords
-    fts_query = " OR ".join(f'"{k}"' for k in keywords if k.strip())
+    import re
+    # Strip non-alphanumeric chars — FTS5 treats ? * " etc. as syntax
+    clean_kws = [re.sub(r'[^\w\s]', '', k).strip() for k in keywords]
+    clean_kws = [k for k in clean_kws if k]
+    if not clean_kws:
+        return []
+    fts_query = " OR ".join(f'"{k}"' for k in clean_kws)
     try:
         rows = conn.execute(
             """
