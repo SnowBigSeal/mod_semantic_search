@@ -434,6 +434,13 @@ def _cache_lookup(query_vec: np.ndarray, loader: str, version: str, threshold: f
     if not rows:
         return None, None
     vecs = np.stack([_unpack(r["query_vec"]) for r in rows])
+    if vecs.shape[1] != query_vec.shape[0]:
+        print(f"[cache] dimension mismatch ({vecs.shape[1]} stored vs {query_vec.shape[0]} current) — clearing cache")
+        conn = db.connect()
+        conn.execute("DELETE FROM query_cache")
+        conn.commit()
+        conn.close()
+        return None, None
     sims = _cosine(query_vec, vecs)
     best = int(np.argmax(sims))
     if sims[best] >= threshold:
