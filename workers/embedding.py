@@ -49,11 +49,10 @@ def _unpack_vector(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float32)
 
 
-# Server context window and chars-per-token estimate
-# Total token budget is shared across all texts in a batch.
-# 2048 ctx / batch_size texts * ~4 chars/token = per-text char limit.
-# Using 0.85 safety margin to account for tokenization overhead.
-SERVER_CTX_TOKENS = 32768
+# Per-text token limit for the embedding server.
+# Each text is processed independently - do NOT divide by batch_size.
+# Set to the server's --ctx-size (llama.cpp default is 512; raise if you launched with more).
+SERVER_CTX_TOKENS = 512
 CHARS_PER_TOKEN = 4
 CTX_SAFETY = 0.85
 
@@ -68,8 +67,8 @@ def _clean_body(body: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
-def _max_chars_per_text(batch_size: int) -> int:
-    return int((SERVER_CTX_TOKENS / batch_size) * CHARS_PER_TOKEN * CTX_SAFETY)
+def _max_chars_per_text() -> int:
+    return int(SERVER_CTX_TOKENS * CHARS_PER_TOKEN * CTX_SAFETY)
 
 def _build_text(row, max_chars: int) -> str:
     title = (row["title"] or "").strip()
@@ -107,7 +106,7 @@ def run(batch_size: int = 32, re_embed: bool = False, parallel: int = 4) -> None
 
     def _process_batch(rows_batch):
         ids = [r["id"] for r in rows_batch]
-        texts = [_build_text(r, _max_chars_per_text(batch_size)) for r in rows_batch]
+        texts = [_build_text(r, _max_chars_per_text()) for r in rows_batch]
         with httpx.Client(timeout=120) as client:
             try:
                 vectors = _embed_batch(texts, base_url, client)
