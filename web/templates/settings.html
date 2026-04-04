@@ -118,6 +118,10 @@
 function _val(id) { return document.getElementById(id)?.value; }
 
 async function startJob(action) {
+  const btn = document.querySelector(`[data-job="${action}"]`);
+  const origLabel = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Starting…'; }
+
   const body = { action };
   if (['retrieval','pipeline','prune'].includes(action)) {
     body.loader  = _val(`${action}-loader`);
@@ -138,10 +142,13 @@ async function startJob(action) {
     if (!res.ok) {
       const err = await res.json();
       alert(`Failed to start job: ${err.detail}`);
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
       return;
     }
+    if (btn) btn.textContent = '✓ Started';
   } catch(e) {
     alert('Request failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = origLabel; }
   }
 }
 
