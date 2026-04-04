@@ -152,9 +152,9 @@ def _rerank(query: str, docs: list, base_url: str) -> list:
         with httpx.Client(timeout=60) as client:
             r = client.post(_URL, json={"prompt": prompt, "max_tokens": 1, "logprobs": 5, "temperature": 0})
             r.raise_for_status()
-        top = r.json()["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
-        # Gather logprobs for yes/no variants
-        lp = {t["token"].lower(): t["logprob"] for t in top}
+        # /v1/completions returns top_logprobs as a dict {token: logprob}
+        top = r.json()["choices"][0]["logprobs"]["top_logprobs"][0]
+        lp = {k.lower(): v for k, v in top.items()}
         yes_lp = lp.get("yes", -20.0)
         no_lp  = lp.get("no",  -20.0)
         # Softmax over just yes/no
@@ -760,8 +760,10 @@ async def search(
 
     if all(s == 0.0 for s in rerank_scores):
         print("[rerank] All scores zero — falling back to cosine")
-        cos_map = {rows[i]["id"]: float(cos_scores[i]) for i in range(len(rows))}
-        rerank_scores = [cos_map.get(r["id"], 0.0) for r in candidates]
+        rerank_scores = [
+            float(cos_scores[row_index[r["id"]]]) if r["id"] in row_index else 0.0
+            for r in candidates
+        ]
 
     ranked = sorted(zip(candidates, rerank_scores), key=lambda x: x[1], reverse=True)
     results = [
