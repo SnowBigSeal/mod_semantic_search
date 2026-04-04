@@ -195,8 +195,8 @@ button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
 
 .banner-log {
   color: var(--muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  max-width: 600px;
+  white-space: pre-wrap; overflow-wrap: break-word;
+  max-width: 800px;
 }
 
 .copy-json-btn {
