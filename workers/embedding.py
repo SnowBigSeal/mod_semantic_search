@@ -111,7 +111,9 @@ def run(batch_size: int = 32, re_embed: bool = False, parallel: int = 4) -> None
             try:
                 vectors = _embed_batch(texts, base_url, client)
             except (httpx.HTTPError, httpx.TimeoutException) as e:
-                print(f"\n[warn] batch failed ({e}), retrying in 10s...")
+                body = getattr(getattr(e, 'response', None), 'text', '')
+                msg = f"{type(e).__name__}: {e}" + (f" — {body[:300]}" if body else "")
+                print(f"\n[warn] batch failed ({msg}), retrying in 10s...")
                 time.sleep(10)
                 vectors = _embed_batch(texts, base_url, client)
         return ids, vectors
@@ -138,7 +140,9 @@ def run(batch_size: int = 32, re_embed: bool = False, parallel: int = 4) -> None
                         ids, vectors = fut.result()
                         results[tuple(ids)] = vectors
                     except Exception as e:
-                        print(f"\n[error] batch failed, skipping: {e}")
+                        body = getattr(getattr(e, 'response', None), 'text', '')
+                        msg = str(e) + (f" — {body[:300]}" if body else "")
+                        print(f"\n[error] batch failed, skipping: {msg}")
 
             now = datetime.now(timezone.utc).isoformat()
             for ids, vectors in results.items():
