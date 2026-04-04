@@ -108,15 +108,16 @@ def run(batch_size: int = 32, re_embed: bool = False, parallel: int = 4) -> None
         ids = [r["id"] for r in rows_batch]
         texts = [_build_text(r, _max_chars_per_text()) for r in rows_batch]
         with httpx.Client(timeout=120) as client:
-            try:
-                vectors = _embed_batch(texts, base_url, client)
-            except (httpx.HTTPError, httpx.TimeoutException) as e:
-                body = getattr(getattr(e, 'response', None), 'text', '')
-                msg = f"{type(e).__name__}: {e}" + (f" — {body[:300]}" if body else "")
-                print(f"\n[warn] batch failed ({msg}), retrying in 10s...")
-                time.sleep(10)
-                vectors = _embed_batch(texts, base_url, client)
-        return ids, vectors
+            while True:
+                try:
+                    return ids, _embed_batch(texts, base_url, client)
+                except (httpx.HTTPError, httpx.TimeoutException) as e:
+                    status = getattr(getattr(e, 'response', None), 'status_code', None)
+                    body = getattr(getattr(e, 'response', None), 'text', '')
+                    msg = f"{type(e).__name__}: {e}" + (f" — {body[:300]}" if body else "")
+                    wait = 30 if status == 503 else 10
+                    print(f"\n[warn] batch failed ({msg}), retrying in {wait}s...")
+                    time.sleep(wait)
 
     with httpx.Client(timeout=120) as _:
         # Prefetch all pending IDs so we can chunk into parallel batches
